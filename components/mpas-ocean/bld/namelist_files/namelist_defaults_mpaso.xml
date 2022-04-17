@@ -78,7 +78,12 @@
 <config_maxMeshDensity>-1.0</config_maxMeshDensity>
 <config_hmix_use_ref_cell_width>.false.</config_hmix_use_ref_cell_width>
 <config_hmix_ref_cell_width>30.0e3</config_hmix_ref_cell_width>
+
+<config_apvm_kind>'none'</config_apvm_kind>
+<config_apvm_kind ocn_grid="QU30">'AUST-constant'</config_apvm_kind>
 <config_apvm_scale_factor>0.0</config_apvm_scale_factor>
+<config_apvm_scale_factor ocn_grid="QU30">0.5</config_apvm_scale_factor>
+<config_apvm_scale_factor_background>0.0</config_apvm_scale_factor_background>
 
 <!-- hmix_del2 -->
 <config_use_mom_del2>.false.</config_use_mom_del2>
@@ -99,6 +104,13 @@
 <config_mom_del2 ocn_grid="WCAtl12to45E2r4">462.0</config_mom_del2>
 <config_mom_del2 ocn_grid="SOwISC12to60E2r4">462.0</config_mom_del2>
 <config_mom_del2 ocn_grid="ECwISC30to60E2r1">1000.0</config_mom_del2>
+
+<config_use_mom_del2 ocn_grid="QU30">.true.</config_use_mom_del2>
+<config_mom_del2 ocn_grid="QU30">3.33e1</config_mom_del2>
+<config_use_mom_div2>.false.</config_use_mom_div2>
+<config_use_mom_div2 ocn_grid="QU30">.true.</config_use_mom_div2>
+<config_mom_div2 ocn_grid="QU30">3.33e4</config_mom_div2>
+
 <config_use_tracer_del2>.false.</config_use_tracer_del2>
 <config_tracer_del2>10.0</config_tracer_del2>
 
@@ -122,8 +134,13 @@
 <config_mom_del4 ocn_grid="WCAtl12to45E2r4">1.18e10</config_mom_del4>
 <config_mom_del4 ocn_grid="SOwISC12to60E2r4">1.18e10</config_mom_del4>
 <config_mom_del4 ocn_grid="ECwISC30to60E2r1">1.2e11</config_mom_del4>
-<config_mom_del4 ocn_grid="QU30">1.2e11</config_mom_del4>
 <config_mom_del4_div_factor>1.0</config_mom_del4_div_factor>
+
+<config_use_mom_del4 ocn_grid="QU30">.false.</config_use_mom_del4>
+<config_use_mom_div4>.false.</config_use_mom_div4>
+<config_use_mom_div4 ocn_grid="QU30">.true.</config_use_mom_div4>
+<config_mom_div4 ocn_grid="QU30">1.0e12</config_mom_div4>
+
 <config_use_tracer_del4>.false.</config_use_tracer_del4>
 <config_tracer_del4>0.0</config_tracer_del4>
 
@@ -146,6 +163,7 @@
 <config_use_Redi ocn_grid="oRRS30to10v3wLI">.false.</config_use_Redi>
 <config_use_Redi ocn_grid="oRRS18to6v3">.false.</config_use_Redi>
 <config_use_Redi ocn_grid="oRRS15to5">.false.</config_use_Redi>
+<config_use_Redi ocn_grid="QU30">.false.</config_use_Redi>
 <config_Redi_closure>'constant'</config_Redi_closure>
 <config_Redi_constant_kappa>400.0</config_Redi_constant_kappa>
 <config_Redi_constant_kappa ocn_forcing="datm_forced_restoring">400.0</config_Redi_constant_kappa>
@@ -163,6 +181,7 @@
 <config_use_GM ocn_grid="oRRS30to10v3wLI">.false.</config_use_GM>
 <config_use_GM ocn_grid="oRRS18to6v3">.false.</config_use_GM>
 <config_use_GM ocn_grid="oRRS15to5">.false.</config_use_GM>
+<config_use_GM ocn_grid="QU30">.false.</config_use_GM>
 <config_GM_closure>'EdenGreatbatch'</config_GM_closure>
 <config_GM_closure ocn_grid="EC30to60E2r2">'constant'</config_GM_closure>
 <config_GM_closure ocn_grid="WC14to60E2r3">'constant'</config_GM_closure>
@@ -342,6 +361,14 @@
 <config_explicit_bottom_drag_coeff>1.0e-3</config_explicit_bottom_drag_coeff>
 <config_use_topographic_wave_drag>.false.</config_use_topographic_wave_drag>
 <config_topographic_wave_drag_coeff>5.0e-4</config_topographic_wave_drag_coeff>
+
+<config_use_full_velocity_friction>.false.</config_use_full_velocity_friction>
+<config_use_full_velocity_friction ocn_grid="QU30">.true.</config_use_full_velocity_friction>
+<config_use_harmonic_thickness_friction>.false.</config_use_harmonic_thickness_friction>
+<config_use_harmonic_thickness_friction ocn_grid="QU30">.true.</config_use_harmonic_thickness_friction>
+<config_use_background_kinetic_energy>.false.</config_use_background_kinetic_energy>
+<config_use_background_kinetic_energy ocn_grid="QU30">.true.</config_use_background_kinetic_energy>
+<config_background_kinetic_energy_bbl ocn_grid="QU30">2.5e-3</config_background_kinetic_energy_bbl>
 
 <!-- ocean_constants -->
 <config_density0>1026.0</config_density0>
@@ -945,7 +972,7 @@
 <config_AM_mocStreamfunction_enable ocn_grid="WCAtl12to45E2r4">.true.</config_AM_mocStreamfunction_enable>
 <config_AM_mocStreamfunction_enable ocn_grid="SOwISC12to60E2r4">.true.</config_AM_mocStreamfunction_enable>
 <config_AM_mocStreamfunction_enable ocn_grid="ECwISC30to60E2r1">.true.</config_AM_mocStreamfunction_enable>
-<config_AM_mocStreamfunction_enable ocn_grid="QU30">.false.</config_AM_mocStreamfunction_enable>
+<config_AM_mocStreamfunction_enable ocn_grid="QU30">.true.</config_AM_mocStreamfunction_enable>
 <config_AM_mocStreamfunction_compute_interval>'0000-00-00_01:00:00'</config_AM_mocStreamfunction_compute_interval>
 <config_AM_mocStreamfunction_output_stream>'mocStreamfunctionOutput'</config_AM_mocStreamfunction_output_stream>
 <config_AM_mocStreamfunction_compute_on_startup>.true.</config_AM_mocStreamfunction_compute_on_startup>

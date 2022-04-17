@@ -128,10 +128,16 @@ contains
       call ocn_vel_hmix_del2_tend(div, relVort, tend, err1)
       err = ior(err1, err)
 
+      call ocn_vel_hmix_div2_tend(div, tend, err1)
+      err = ior(err1, err)
+
       call ocn_vel_hmix_leith_tend(div, relVort, tend, err1)
       err = ior(err1, err)
 
       call ocn_vel_hmix_del4_tend(div, relVort, tend, err1)
+      err = ior(err1, err)
+
+      call ocn_vel_hmix_div4_tend(div, tend, err1)
       err = ior(err1, err)
 
       call mpas_timer_stop("vel hmix")
@@ -191,7 +197,7 @@ contains
       if (err3 /= 0) call mpas_log_write( &
          'Error encountered initializing vel_hmix_del4', MPAS_LOG_ERR)
 
-      err = ior(ior(err1, err2),err3)
+      err = ior(ior(err1,err2),err3)
 
       if (config_disable_vel_hmix) hmixOff = .true.
 

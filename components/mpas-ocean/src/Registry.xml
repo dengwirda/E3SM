@@ -226,10 +226,18 @@
 					description="Reference cell width. If config_hmix_use_ref_cell_width = .true., then hmix coefficients are set to be nu_{2h} = config_mom_del2*(cellWidth / config_hmix_use_ref_cell_width) and nu_{4h} = config_mom_del4*(cellWidth / config_hmix_use_ref_cell_width)^3 where cellWidth is the effective cell width computed as 2*sqrt(areaCell/pi). See Hoch et al 2020 JAMES eq 1,2. This relation applies within a simulation, but also generally among multiple simulations, so the parameters config_mom_del2, config_mom_del4, and config_hmix_use_ref_cell_width can generally remain at their standard values, and just be adjusted for fine tuning."
 					possible_values="Any positive real number, but typically a resolution number such as 30km."
 		/>
-		<nml_option name="config_apvm_scale_factor" type="real" default_value="0.0" units="unitless"
-					description="Anticipated potential vorticity (APV) method scale factor, $c_{apv}$. When zero, APV is off."
-					possible_values="Any non-negative number, typically between zero and one."
-		/>
+		<nml_option name="config_apvm_kind" type="character" default_value="None" units="unitless"
+                    description="Anticipated potential vorticity (APV) method formulation."
+                    possible_values="'none', 'APVM', 'AUST-constant', 'AUST-adaptive'"
+        />
+        <nml_option name="config_apvm_scale_factor" type="real" default_value="0.50" units="unitless"
+                    description="Anticipated potential vorticity (APV) method scale factor, $\gamma_{apv}$."
+                    possible_values="Any non-negative number, typically between zero and one."
+        />
+        <nml_option name="config_apvm_scale_factor_background" type="real" default_value="0.10" units="unitless"
+                    description="Anticipated potential vorticity (APV) method scale factor, $\gamma_{apv}^{back}$."
+                    possible_values="Any non-negative number, typically between zero and one."
+        />
 	</nml_record>
 	<nml_record name="hmix_del2" mode="forward">
 		<nml_option name="config_use_mom_del2" type="logical" default_value=".false." units="unitless"
@@ -240,6 +248,14 @@
 					description="Horizontal viscosity, $\nu_{2h}$. If config_hmix_use_ref_cell_width = .true. then $\nu_h$ = config_mom_del2*(cellWidth / config_hmix_use_ref_cell_width). If config_hmix_use_ref_cell_width = .false. then it is referenced to the smallest cell."
 					possible_values="any positive real"
 		/>
+        <nml_option name="config_use_mom_div2" type="logical" default_value=".false." units="unitless"
+                    description="If true, harmonic horizontal divergence damping is added to the momentum tendencies."
+                    possible_values=".true. or .false."
+        />
+        <nml_option name="config_mom_div2" type="real" default_value="0.0" units="m^{2} s^{-1}"
+                    description="Horizontal divergence damping, $\nu_{2h}^{\delta}$. If config_hmix_use_ref_cell_width = .true. then $\nu_h^{\delta}$ = config_mom_del2*(cellWidth / config_hmix_use_ref_cell_width). If config_hmix_use_ref_cell_width = .false. then it is referenced to the smallest cell."
+                    possible_values="any positive real"
+        />
 		<nml_option name="config_use_tracer_del2" type="logical" default_value=".false." units="unitless"
 					description="If true, Laplacian horizontal mixing is used on the tracer equation."
 					possible_values=".true. or .false."
@@ -262,6 +278,14 @@
 					description="The divergence portion of the del4 operator is scaled by this factor."
 					possible_values="any positive real"
 		/>
+        <nml_option name="config_use_mom_div4" type="logical" default_value=".false." units="unitless"
+                    description="If true, biharmonic horizontal divergence damping is added to the momentum tendencies."
+                    possible_values=".true. or .false."
+        />
+        <nml_option name="config_mom_div4" type="real" default_value="0.0" units="m^{2} s^{-1}"
+                    description="Horizontal divergence damping, $\nu_{4h}^{\delta}$. If config_hmix_use_ref_cell_width = .true. then $\nu_h^{\delta}$ = config_mom_del4*(cellWidth / config_hmix_use_ref_cell_width)^3. If config_hmix_use_ref_cell_width = .false. then it is referenced to the smallest cell."
+                    possible_values="any positive real"
+        />
 		<nml_option name="config_use_tracer_del4" type="logical" default_value=".false." units="unitless"
 					description="If true, biharmonic horizontal mixing is used on the tracer equation."
 					possible_values=".true. or .false."
@@ -954,6 +978,14 @@
 		/>
 	</nml_record>
 	<nml_record name="bottom_drag" mode="forward">
+        <nml_option name="config_use_full_velocity_friction" type="logical" default_value=".false." units="unitless"
+                    description="If true, compute |\mathbf{u}| using \sqrt{\mathbf{u}\cdot\mathbf{u}} rather than \sqrt{2*KE}."
+                    possible_values=".true. or .false."
+        />
+        <nml_option name="config_use_harmonic_thickness_friction" type="logical" default_value=".false." units="unitless"
+                    description="If true, uses harmonic averaging to compute edge-centred layer thicknesses for friction laws."
+                    possible_values=".true. or .false."
+        />
 		<nml_option name="config_use_implicit_bottom_drag" type="logical" default_value=".true." units="unitless"
 					description="If true, implicit bottom drag is used on the momentum equation."
 					possible_values=".true. or .false."
@@ -990,7 +1022,14 @@
 					description="Dimensionless topographic wave drag coefficient, $c_{topo}$."
 					possible_values="any positive real, typically 5.0e-4"
 		/>
-
+        <nml_option name="config_use_background_kinetic_energy" type="logical" default_value=".false." units="unitless"
+                    description="If true, turbulent kinetic energy enhancement is added to friction laws."
+                    possible_values=".true. or .false."
+        />
+        <nml_option name="config_background_kinetic_energy_bbl" type="real" default_value="2.5e-3" units="m^{2} s^{-2}"
+                    description="Additional bottom boundary layer turbulent kinetic energy added to computation of velocity magnitudes for bottom friction laws."
+                    possible_values="any positive real, typically 2.5e-3"
+        />
 	</nml_record>
 	<nml_record name="wetting_drying" mode="init;forward">
 		<nml_option name="config_use_wetting_drying" type="logical" default_value=".false." units="unitless"
