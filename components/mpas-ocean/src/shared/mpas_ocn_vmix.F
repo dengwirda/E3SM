@@ -328,7 +328,7 @@ contains
          m = A/bTemp(N-1)
 
          ! form h_b for friction law
-         if (config_use_harmonic_thickness_friction) then
+         if (config_use_harmonic_thickness_for_drag) then
             layerThickEdgeBot = 2.0_RKIND * &
                layerThickness(N,cell1) * layerThickness(N,cell2) / &
                   max(layerThickness(N,cell1) + layerThickness(N,cell2), 1.0E-16_RKIND)
@@ -337,7 +337,7 @@ contains
          end if
 
          ! form |u| for friction law
-         if (config_use_full_velocity_friction) then
+         if (config_use_full_velocity_for_drag) then
             velocityMagnitudeBot = sqrt( &
                normalVelocity(N,iEdge) * normalVelocity(N,iEdge) + &
                tangentialVelocity(N,iEdge) * tangentialVelocity(N,iEdge) + kineticEnergyBBL)
@@ -496,7 +496,7 @@ contains
          m = A/bTemp(N-1)
 
          ! form h_b for friction law
-         if (config_use_harmonic_thickness_friction) then
+         if (config_use_harmonic_thickness_for_drag) then
             layerThickEdgeBot = 2.0_RKIND * &
                layerThickness(N,cell1) * layerThickness(N,cell2) / &
                   max(layerThickness(N,cell1) + layerThickness(N,cell2), 1.0E-16_RKIND)
@@ -505,7 +505,7 @@ contains
          end if
 
          ! form |u| for friction law
-         if (config_use_full_velocity_friction) then
+         if (config_use_full_velocity_for_drag) then
             velocityMagnitudeBot = sqrt( &
                normalVelocity(N,iEdge) * normalVelocity(N,iEdge) + &
                tangentialVelocity(N,iEdge) * tangentialVelocity(N,iEdge) + kineticEnergyBBL)
@@ -671,7 +671,7 @@ contains
          m = A/bTemp(N-1)
 
          ! form h_b for friction law
-         if (config_use_harmonic_thickness_friction) then
+         if (config_use_harmonic_thickness_for_drag) then
             layerThickEdgeBot = 2.0_RKIND * &
                layerThickness(N,cell1) * layerThickness(N,cell2) / &
                   max(layerThickness(N,cell1) + layerThickness(N,cell2), 1.0E-16_RKIND)
@@ -680,7 +680,7 @@ contains
          end if
 
          ! form |u| for friction law
-         if (config_use_full_velocity_friction) then
+         if (config_use_full_velocity_for_drag) then
             velocityMagnitudeBot = sqrt( &
                normalVelocity(N,iEdge) * normalVelocity(N,iEdge) + &
                tangentialVelocity(N,iEdge) * tangentialVelocity(N,iEdge) + kineticEnergyBBL)
@@ -920,7 +920,7 @@ contains
          m = A/bTemp(N-1)
 
          ! form h_b for friction law
-         if (config_use_harmonic_thickness_friction) then
+         if (config_use_harmonic_thickness_for_drag) then
             layerThickEdgeBot = 2.0_RKIND * &
                layerThickness(N,cell1) * layerThickness(N,cell2) / &
                   max(layerThickness(N,cell1) + layerThickness(N,cell2), 1.0E-16_RKIND)
@@ -929,7 +929,7 @@ contains
          end if
 
          ! form |u| for friction law
-         if (config_use_full_velocity_friction) then
+         if (config_use_full_velocity_for_drag) then
             velocityMagnitudeBot = sqrt( &
                normalVelocity(N,iEdge) * normalVelocity(N,iEdge) + &
                tangentialVelocity(N,iEdge) * tangentialVelocity(N,iEdge) + kineticEnergyBBL)

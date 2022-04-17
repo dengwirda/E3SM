@@ -978,11 +978,11 @@
 		/>
 	</nml_record>
 	<nml_record name="bottom_drag" mode="forward">
-        <nml_option name="config_use_full_velocity_friction" type="logical" default_value=".false." units="unitless"
+        <nml_option name="config_use_full_velocity_for_drag" type="logical" default_value=".false." units="unitless"
                     description="If true, compute |\mathbf{u}| using \sqrt{\mathbf{u}\cdot\mathbf{u}} rather than \sqrt{2*KE}."
                     possible_values=".true. or .false."
         />
-        <nml_option name="config_use_harmonic_thickness_friction" type="logical" default_value=".false." units="unitless"
+        <nml_option name="config_use_harmonic_thickness_for_drag" type="logical" default_value=".false." units="unitless"
                     description="If true, uses harmonic averaging to compute edge-centred layer thicknesses for friction laws."
                     possible_values=".true. or .false."
         />
