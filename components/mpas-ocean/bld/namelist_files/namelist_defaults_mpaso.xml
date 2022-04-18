@@ -106,10 +106,10 @@
 <config_mom_del2 ocn_grid="ECwISC30to60E2r1">1000.0</config_mom_del2>
 
 <config_use_mom_del2 ocn_grid="QU30">.true.</config_use_mom_del2>
-<config_mom_del2 ocn_grid="QU30">3.33e1</config_mom_del2>
+<config_mom_del2 ocn_grid="QU30">3.75e1</config_mom_del2>
 <config_use_mom_div2>.false.</config_use_mom_div2>
 <config_use_mom_div2 ocn_grid="QU30">.true.</config_use_mom_div2>
-<config_mom_div2 ocn_grid="QU30">3.33e4</config_mom_div2>
+<config_mom_div2 ocn_grid="QU30">3.75e4</config_mom_div2>
 
 <config_use_tracer_del2>.false.</config_use_tracer_del2>
 <config_tracer_del2>10.0</config_tracer_del2>
