@@ -78,7 +78,6 @@
 <config_maxMeshDensity>-1.0</config_maxMeshDensity>
 <config_hmix_use_ref_cell_width>.false.</config_hmix_use_ref_cell_width>
 <config_hmix_ref_cell_width>30.0e3</config_hmix_ref_cell_width>
-
 <config_apvm_kind>'none'</config_apvm_kind>
 <config_apvm_kind ocn_grid="QU30">'AUST-constant'</config_apvm_kind>
 <config_apvm_scale_factor>0.0</config_apvm_scale_factor>
@@ -95,6 +94,7 @@
 <config_use_mom_del2 ocn_grid="WCAtl12to45E2r4">.true.</config_use_mom_del2>
 <config_use_mom_del2 ocn_grid="SOwISC12to60E2r4">.true.</config_use_mom_del2>
 <config_use_mom_del2 ocn_grid="ECwISC30to60E2r1">.true.</config_use_mom_del2>
+<config_use_mom_del2 ocn_grid="QU30">.true.</config_use_mom_del2>
 <config_mom_del2>10.0</config_mom_del2>
 <config_mom_del2 ocn_grid="oEC60to30v3">1000.0</config_mom_del2>
 <config_mom_del2 ocn_grid="oEC60to30v3wLI">1000.0</config_mom_del2>
@@ -104,18 +104,16 @@
 <config_mom_del2 ocn_grid="WCAtl12to45E2r4">462.0</config_mom_del2>
 <config_mom_del2 ocn_grid="SOwISC12to60E2r4">462.0</config_mom_del2>
 <config_mom_del2 ocn_grid="ECwISC30to60E2r1">1000.0</config_mom_del2>
-
-<config_use_mom_del2 ocn_grid="QU30">.true.</config_use_mom_del2>
 <config_mom_del2 ocn_grid="QU30">3.75e1</config_mom_del2>
 <config_use_mom_div2>.false.</config_use_mom_div2>
 <config_use_mom_div2 ocn_grid="QU30">.true.</config_use_mom_div2>
 <config_mom_div2 ocn_grid="QU30">3.75e4</config_mom_div2>
-
 <config_use_tracer_del2>.false.</config_use_tracer_del2>
 <config_tracer_del2>10.0</config_tracer_del2>
 
 <!-- hmix_del4 -->
 <config_use_mom_del4>.true.</config_use_mom_del4>
+<config_use_mom_del4 ocn_grid="QU30">.false.</config_use_mom_del4>
 <config_mom_del4 ocn_grid="oQU480">2.0e15</config_mom_del4>
 <config_mom_del4 ocn_grid="oQU240">2.0e14</config_mom_del4>
 <config_mom_del4 ocn_grid="oQU240wLI">2.0e14</config_mom_del4>
@@ -135,12 +133,9 @@
 <config_mom_del4 ocn_grid="SOwISC12to60E2r4">1.18e10</config_mom_del4>
 <config_mom_del4 ocn_grid="ECwISC30to60E2r1">1.2e11</config_mom_del4>
 <config_mom_del4_div_factor>1.0</config_mom_del4_div_factor>
-
-<config_use_mom_del4 ocn_grid="QU30">.false.</config_use_mom_del4>
 <config_use_mom_div4>.false.</config_use_mom_div4>
 <config_use_mom_div4 ocn_grid="QU30">.true.</config_use_mom_div4>
 <config_mom_div4 ocn_grid="QU30">1.0e12</config_mom_div4>
-
 <config_use_tracer_del4>.false.</config_use_tracer_del4>
 <config_tracer_del4>0.0</config_tracer_del4>
 
@@ -352,6 +347,10 @@
 <config_monotonic>.true.</config_monotonic>
 
 <!-- bottom_drag -->
+<config_use_full_velocity_for_drag>.false.</config_use_full_velocity_for_drag>
+<config_use_full_velocity_for_drag ocn_grid="QU30">.true.</config_use_full_velocity_for_drag>
+<config_use_harmonic_thickness_for_drag>.false.</config_use_harmonic_thickness_for_drag>
+<config_use_harmonic_thickness_for_drag ocn_grid="QU30">.true.</config_use_harmonic_thickness_for_drag>
 <config_use_implicit_bottom_drag>.true.</config_use_implicit_bottom_drag>
 <config_implicit_bottom_drag_coeff>1.0e-3</config_implicit_bottom_drag_coeff>
 <config_use_implicit_bottom_roughness>.false.</config_use_implicit_bottom_roughness>
@@ -361,11 +360,6 @@
 <config_explicit_bottom_drag_coeff>1.0e-3</config_explicit_bottom_drag_coeff>
 <config_use_topographic_wave_drag>.false.</config_use_topographic_wave_drag>
 <config_topographic_wave_drag_coeff>5.0e-4</config_topographic_wave_drag_coeff>
-
-<config_use_full_velocity_friction>.false.</config_use_full_velocity_for_drag>
-<config_use_full_velocity_friction ocn_grid="QU30">.true.</config_use_full_velocity_for_drag>
-<config_use_harmonic_thickness_friction>.false.</config_use_harmonic_thickness_for_drag>
-<config_use_harmonic_thickness_friction ocn_grid="QU30">.true.</config_use_harmonic_thickness_for_drag>
 <config_use_background_kinetic_energy>.false.</config_use_background_kinetic_energy>
 <config_use_background_kinetic_energy ocn_grid="QU30">.true.</config_use_background_kinetic_energy>
 <config_background_kinetic_energy_bbl ocn_grid="QU30">2.5e-3</config_background_kinetic_energy_bbl>

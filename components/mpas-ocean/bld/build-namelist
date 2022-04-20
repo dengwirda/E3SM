@@ -520,7 +520,9 @@ add_default($nl, 'config_hmix_scaleWithMesh');
 add_default($nl, 'config_maxMeshDensity');
 add_default($nl, 'config_hmix_use_ref_cell_width');
 add_default($nl, 'config_hmix_ref_cell_width');
+add_default($nl, 'config_apvm_kind');
 add_default($nl, 'config_apvm_scale_factor');
+add_default($nl, 'config_apvm_scale_factor_background');
 
 #############################
 # Namelist group: hmix_del2 #
@@ -528,6 +530,8 @@ add_default($nl, 'config_apvm_scale_factor');
 
 add_default($nl, 'config_use_mom_del2');
 add_default($nl, 'config_mom_del2');
+add_default($nl, 'config_use_mom_div2');
+add_default($nl, 'config_mom_div2');
 add_default($nl, 'config_use_tracer_del2');
 add_default($nl, 'config_tracer_del2');
 
@@ -538,6 +542,8 @@ add_default($nl, 'config_tracer_del2');
 add_default($nl, 'config_use_mom_del4');
 add_default($nl, 'config_mom_del4');
 add_default($nl, 'config_mom_del4_div_factor');
+add_default($nl, 'config_use_mom_div4');
+add_default($nl, 'config_mom_div4');
 add_default($nl, 'config_use_tracer_del4');
 add_default($nl, 'config_tracer_del4');
 
@@ -761,6 +767,8 @@ add_default($nl, 'config_monotonic');
 # Namelist group: bottom_drag #
 ###############################
 
+add_default($nl, 'config_use_full_velocity_for_drag');
+add_default($nl, 'config_use_harmonic_thickness_for_drag');
 add_default($nl, 'config_use_implicit_bottom_drag');
 add_default($nl, 'config_implicit_bottom_drag_coeff');
 add_default($nl, 'config_use_implicit_bottom_roughness');
@@ -770,6 +778,8 @@ add_default($nl, 'config_use_explicit_bottom_drag');
 add_default($nl, 'config_explicit_bottom_drag_coeff');
 add_default($nl, 'config_use_topographic_wave_drag');
 add_default($nl, 'config_topographic_wave_drag_coeff');
+add_default($nl, 'config_use_background_kinetic_energy');
+add_default($nl, 'config_background_kinetic_energy_bbl');
 
 ###################################
 # Namelist group: ocean_constants #

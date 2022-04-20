@@ -270,9 +270,25 @@ Valid values: Any positive real number, but typically a resolution number such a
 Default: Defined in namelist_defaults.xml
 </entry>
 
+<entry id="config_apvm_kind" type="char*1024"
+	category="hmix" group="hmix">
+Anticipated potential vorticity (APV) method formulation.
+
+Valid values: 'none', 'APVM', 'AUST-constant', 'AUST-adaptive'
+Default: Defined in namelist_defaults.xml
+</entry>
+
 <entry id="config_apvm_scale_factor" type="real"
 	category="hmix" group="hmix">
-Anticipated potential vorticity (APV) method scale factor, $c_{apv}$. When zero, APV is off.
+Anticipated potential vorticity (APV) method scale factor, $\gamma_{apv}$.
+
+Valid values: Any non-negative number, typically between zero and one.
+Default: Defined in namelist_defaults.xml
+</entry>
+
+<entry id="config_apvm_scale_factor_background" type="real"
+	category="hmix" group="hmix">
+Anticipated potential vorticity (APV) method scale factor, $\gamma_{apv}^{back}$.
 
 Valid values: Any non-negative number, typically between zero and one.
 Default: Defined in namelist_defaults.xml
@@ -292,6 +308,22 @@ Default: Defined in namelist_defaults.xml
 <entry id="config_mom_del2" type="real"
 	category="hmix_del2" group="hmix_del2">
 Horizontal viscosity, $\nu_{2h}$. If config_hmix_use_ref_cell_width = .true. then $\nu_h$ = config_mom_del2*(cellWidth / config_hmix_use_ref_cell_width). If config_hmix_use_ref_cell_width = .false. then it is referenced to the smallest cell.
+
+Valid values: any positive real
+Default: Defined in namelist_defaults.xml
+</entry>
+
+<entry id="config_use_mom_div2" type="logical"
+	category="hmix_del2" group="hmix_del2">
+If true, harmonic horizontal divergence damping is added to the momentum tendencies.
+
+Valid values: .true. or .false.
+Default: Defined in namelist_defaults.xml
+</entry>
+
+<entry id="config_mom_div2" type="real"
+	category="hmix_del2" group="hmix_del2">
+Horizontal divergence damping, $\nu_{2h}^{\delta}$. If config_hmix_use_ref_cell_width = .true. then $\nu_h^{\delta}$ = config_mom_del2*(cellWidth / config_hmix_use_ref_cell_width). If config_hmix_use_ref_cell_width = .false. then it is referenced to the smallest cell.
 
 Valid values: any positive real
 Default: Defined in namelist_defaults.xml
@@ -335,6 +367,22 @@ Default: Defined in namelist_defaults.xml
 <entry id="config_mom_del4_div_factor" type="real"
 	category="hmix_del4" group="hmix_del4">
 The divergence portion of the del4 operator is scaled by this factor.
+
+Valid values: any positive real
+Default: Defined in namelist_defaults.xml
+</entry>
+
+<entry id="config_use_mom_div4" type="logical"
+	category="hmix_del4" group="hmix_del4">
+If true, biharmonic horizontal divergence damping is added to the momentum tendencies.
+
+Valid values: .true. or .false.
+Default: Defined in namelist_defaults.xml
+</entry>
+
+<entry id="config_mom_div4" type="real"
+	category="hmix_del4" group="hmix_del4">
+Horizontal divergence damping, $\nu_{4h}^{\delta}$. If config_hmix_use_ref_cell_width = .true. then $\nu_h^{\delta}$ = config_mom_del4*(cellWidth / config_hmix_use_ref_cell_width)^3. If config_hmix_use_ref_cell_width = .false. then it is referenced to the smallest cell.
 
 Valid values: any positive real
 Default: Defined in namelist_defaults.xml
@@ -487,7 +535,7 @@ Default: Defined in namelist_defaults.xml
 
 <entry id="config_Redi_N2_based_taper_limit_term1" type="logical"
 	category="Redi_isopycnal_mixing" group="Redi_isopycnal_mixing">
-If true, the N2 lim iting is applied to the horizontal diffusion term
+If true, the N2 limiting is applied to the horizontal diffusion term
 
 Valid values: .true. or .false.
 Default: Defined in namelist_defaults.xml
@@ -1489,6 +1537,22 @@ Default: Defined in namelist_defaults.xml
 
 <!-- bottom_drag -->
 
+<entry id="config_use_full_velocity_for_drag" type="logical"
+	category="bottom_drag" group="bottom_drag">
+If true, compute |\mathbf{u}| using \sqrt{\mathbf{u}\cdot\mathbf{u}} rather than \sqrt{2*KE}.
+
+Valid values: .true. or .false.
+Default: Defined in namelist_defaults.xml
+</entry>
+
+<entry id="config_use_harmonic_thickness_for_drag" type="logical"
+	category="bottom_drag" group="bottom_drag">
+If true, uses harmonic averaging to compute edge-centred layer thicknesses for friction laws.
+
+Valid values: .true. or .false.
+Default: Defined in namelist_defaults.xml
+</entry>
+
 <entry id="config_use_implicit_bottom_drag" type="logical"
 	category="bottom_drag" group="bottom_drag">
 If true, implicit bottom drag is used on the momentum equation.
@@ -1558,6 +1622,22 @@ Default: Defined in namelist_defaults.xml
 Dimensionless topographic wave drag coefficient, $c_{topo}$.
 
 Valid values: any positive real, typically 5.0e-4
+Default: Defined in namelist_defaults.xml
+</entry>
+
+<entry id="config_use_background_kinetic_energy" type="logical"
+	category="bottom_drag" group="bottom_drag">
+If true, turbulent kinetic energy enhancement is added to friction laws.
+
+Valid values: .true. or .false.
+Default: Defined in namelist_defaults.xml
+</entry>
+
+<entry id="config_background_kinetic_energy_bbl" type="real"
+	category="bottom_drag" group="bottom_drag">
+Additional bottom boundary layer turbulent kinetic energy added to computation of velocity magnitudes for bottom friction laws.
+
+Valid values: any positive real, typically 2.5e-3
 Default: Defined in namelist_defaults.xml
 </entry>
 
