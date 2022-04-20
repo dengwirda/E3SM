@@ -132,6 +132,7 @@
 <config_mom_del4 ocn_grid="WCAtl12to45E2r4">1.18e10</config_mom_del4>
 <config_mom_del4 ocn_grid="SOwISC12to60E2r4">1.18e10</config_mom_del4>
 <config_mom_del4 ocn_grid="ECwISC30to60E2r1">1.2e11</config_mom_del4>
+<config_mom_del4 ocn_grid="QU30">0.0e11</config_mom_del4>
 <config_mom_del4_div_factor>1.0</config_mom_del4_div_factor>
 <config_use_mom_div4>.false.</config_use_mom_div4>
 <config_use_mom_div4 ocn_grid="QU30">.true.</config_use_mom_div4>
