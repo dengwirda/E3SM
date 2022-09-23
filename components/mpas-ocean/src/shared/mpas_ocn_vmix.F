@@ -67,7 +67,6 @@ module ocn_vmix
    real (kind=RKIND) :: implicitBottomDragCoef
    real (kind=RKIND) :: rayleighDampingCoef, rayleighBottomDampingCoef, &
                         rayleighDepthVariable
-   real (kind=RKIND) :: kineticEnergyBBL, kineticEnergyTBL
 
 !***********************************************************************
 
@@ -265,7 +264,6 @@ contains
       real (kind=RKIND), dimension(:), allocatable :: bTemp, C, rTemp
       real (kind=RKIND) :: A, m
       real (kind=RKIND) :: edgeThicknessTotal
-      real (kind=RKIND) :: velocityMagnitudeBot, layerThickEdgeBot
 
       err = 0
 
@@ -327,30 +325,12 @@ contains
            / layerThickEdgeMean(N,iEdge)
          m = A/bTemp(N-1)
 
-         ! form h_b for friction law
-         if (config_use_harmonic_thickness_for_drag) then
-            layerThickEdgeBot = 2.0_RKIND * &
-               layerThickness(N,cell1) * layerThickness(N,cell2) / &
-                  max(layerThickness(N,cell1) + layerThickness(N,cell2), 1.0E-16_RKIND)
-         else
-            layerThickEdgeBot = layerThickEdgeMean(N,iEdge)
-         end if
-
-         ! form |u| for friction law
-         if (config_use_full_velocity_for_drag) then
-            velocityMagnitudeBot = sqrt( &
-               normalVelocity(N,iEdge) * normalVelocity(N,iEdge) + &
-               tangentialVelocity(N,iEdge) * tangentialVelocity(N,iEdge) + kineticEnergyBBL)
-         else
-            velocityMagnitudeBot = sqrt( &
-               kineticEnergyCell(N,cell1) + kineticEnergyCell(N,cell2) + kineticEnergyBBL)
-         end if
-
          ! x(N) = rTemp(N) / bTemp(N)
          ! Apply bottom drag boundary condition on the viscous term
+         ! using sqrt(2.0*kineticEnergyEdge(k,iEdge))
          normalVelocity(N,iEdge) = (normalVelocity(N,iEdge) - m*rTemp(N-1)) &
              / (1.0_RKIND - A + dt*implicitBottomDragCoef &
-             * velocityMagnitudeBot / layerThickEdgeBot &
+             * sqrt(kineticEnergyCell(N,cell1) + kineticEnergyCell(N,cell2)) / layerThickEdgeMean(N,iEdge) &
              ! added Rayleigh terms
              + dt*(rayleighBottomDampingCoef + rayleighDampingCoef &
              / ((1.0_RKIND - rayleighDepthVariable) + rayleighDepthVariable*edgeThicknessTotal)) &
@@ -443,7 +423,6 @@ contains
 
       real (kind=RKIND), dimension(:), allocatable :: bTemp, C, rTemp
       real (kind=RKIND) :: A, m
-      real (kind=RKIND) :: velocityMagnitudeBot, layerThickEdgeBot
 
       err = 0
 
@@ -495,30 +474,12 @@ contains
            / layerThickEdgeMean(N,iEdge)
          m = A/bTemp(N-1)
 
-         ! form h_b for friction law
-         if (config_use_harmonic_thickness_for_drag) then
-            layerThickEdgeBot = 2.0_RKIND * &
-               layerThickness(N,cell1) * layerThickness(N,cell2) / &
-                  max(layerThickness(N,cell1) + layerThickness(N,cell2), 1.0E-16_RKIND)
-         else
-            layerThickEdgeBot = layerThickEdgeMean(N,iEdge)
-         end if
-
-         ! form |u| for friction law
-         if (config_use_full_velocity_for_drag) then
-            velocityMagnitudeBot = sqrt( &
-               normalVelocity(N,iEdge) * normalVelocity(N,iEdge) + &
-               tangentialVelocity(N,iEdge) * tangentialVelocity(N,iEdge) + kineticEnergyBBL)
-         else
-            velocityMagnitudeBot = sqrt( &
-               kineticEnergyCell(N,cell1) + kineticEnergyCell(N,cell2) + kineticEnergyBBL)
-         end if
-
          ! x(N) = rTemp(N) / bTemp(N)
          ! Apply bottom drag boundary condition on the viscous term
+         ! using sqrt(2.0*kineticEnergyEdge(k,iEdge))
          normalVelocity(N,iEdge) = (normalVelocity(N,iEdge) - m*rTemp(N-1)) &
              / (1.0_RKIND - A + dt*implicitBottomDragCoef &
-             * velocityMagnitudeBot / layerThickEdgeBot &
+             * sqrt(kineticEnergyCell(N,cell1) + kineticEnergyCell(N,cell2)) / layerThickEdgeMean(N,iEdge) &
              - m*C(N-1))
          ! second pass: back substitution
          do k = N-1, Nsurf, -1
@@ -616,7 +577,6 @@ contains
 
       real (kind=RKIND), dimension(:), allocatable :: bTemp, C, rTemp
       real (kind=RKIND) :: A, m
-      real (kind=RKIND) :: velocityMagnitudeBot, layerThickEdgeBot
 
       err = 0
 
@@ -670,30 +630,12 @@ contains
            / layerThickEdgeMean(N,iEdge)
          m = A/bTemp(N-1)
 
-         ! form h_b for friction law
-         if (config_use_harmonic_thickness_for_drag) then
-            layerThickEdgeBot = 2.0_RKIND * &
-               layerThickness(N,cell1) * layerThickness(N,cell2) / &
-                  max(layerThickness(N,cell1) + layerThickness(N,cell2), 1.0E-16_RKIND)
-         else
-            layerThickEdgeBot = layerThickEdgeMean(N,iEdge)
-         end if
-
-         ! form |u| for friction law
-         if (config_use_full_velocity_for_drag) then
-            velocityMagnitudeBot = sqrt( &
-               normalVelocity(N,iEdge) * normalVelocity(N,iEdge) + &
-               tangentialVelocity(N,iEdge) * tangentialVelocity(N,iEdge) + kineticEnergyBBL)
-         else
-            velocityMagnitudeBot = sqrt( &
-               kineticEnergyCell(N,cell1) + kineticEnergyCell(N,cell2) + kineticEnergyBBL)
-         end if
-
          ! x(N) = rTemp(N) / bTemp(N)
          ! Apply bottom drag boundary condition on the viscous term
+         ! using sqrt(2.0*kineticEnergyEdge(k,iEdge))
          normalVelocity(N,iEdge) = (normalVelocity(N,iEdge) - m*rTemp(N-1)) &
              / (1.0_RKIND - A + dt*implicitCD &
-             * velocityMagnitudeBot / layerThickEdgeBot &
+             * sqrt(kineticEnergyCell(N,cell1) + kineticEnergyCell(N,cell2)) / layerThickEdgeMean(N,iEdge) &
              - m*C(N-1))
          ! second pass: back substitution
          do k = N-1, Nsurf, -1
@@ -797,7 +739,6 @@ contains
 
       real (kind=RKIND), dimension(:), allocatable :: bTemp, C, rTemp
       real (kind=RKIND) :: A, m
-      real (kind=RKIND) :: velocityMagnitudeBot, layerThickEdgeBot
 
       ! vegetation_drag
       real (kind=RKIND), dimension(:), pointer :: vegetationHeight
@@ -885,7 +826,7 @@ contains
            ! averaging the two bottomDepth cells.
            implicitCd = max(0.0025_RKIND, &
                         min(0.1_RKIND, &
-                          0.16_RKIND/log(250.0_RKIND*(bottomDepth(cell1)+bottomDepth(cell2)))**2 ))
+                          0.16_RKIND/(log(250.0_RKIND*(bottomDepth(cell1)+bottomDepth(cell2))))**2 ))
          elseif (config_use_vegetation_drag .AND. config_use_vegetation_manning_equation) then
            implicitCd = gravity*(0.5_RKIND*(vegetationManning(cell1) + vegetationManning(cell2)))**2 * &
             (0.5_RKIND * (ssh(cell1) + ssh(cell2) + bottomDepth(cell1) + bottomDepth(cell2)))**(-1.0_RKIND/3.0_RKIND)
@@ -919,30 +860,12 @@ contains
            / layerThickEdgeMean(N,iEdge)
          m = A/bTemp(N-1)
 
-         ! form h_b for friction law
-         if (config_use_harmonic_thickness_for_drag) then
-            layerThickEdgeBot = 2.0_RKIND * &
-               layerThickness(N,cell1) * layerThickness(N,cell2) / &
-                  max(layerThickness(N,cell1) + layerThickness(N,cell2), 1.0E-16_RKIND)
-         else
-            layerThickEdgeBot = layerThickEdgeMean(N,iEdge)
-         end if
-
-         ! form |u| for friction law
-         if (config_use_full_velocity_for_drag) then
-            velocityMagnitudeBot = sqrt( &
-               normalVelocity(N,iEdge) * normalVelocity(N,iEdge) + &
-               tangentialVelocity(N,iEdge) * tangentialVelocity(N,iEdge) + kineticEnergyBBL)
-         else
-            velocityMagnitudeBot = sqrt( &
-               kineticEnergyCell(N,cell1) + kineticEnergyCell(N,cell2) + kineticEnergyBBL)
-         end if
-
          ! x(N) = rTemp(N) / bTemp(N)
          ! Apply bottom drag boundary condition on the viscous term
+         ! using sqrt(2.0*kineticEnergyEdge(k,iEdge))
          normalVelocity(N,iEdge) = (normalVelocity(N,iEdge) - m*rTemp(N-1)) &
              / (1.0_RKIND - A + dt*implicitCD &
-             * velocityMagnitudeBot / layerThickEdgeBot &
+             * sqrt(kineticEnergyCell(N,cell1) + kineticEnergyCell(N,cell2)) / layerThickEdgeMean(N,iEdge) &
              - m*C(N-1))
          ! second pass: back substitution
          do k = N-1, Nsurf, -1
@@ -1439,13 +1362,6 @@ contains
       rayleighDepthVariable = 0.0_RKIND
       if (config_Rayleigh_damping_depth_variable) then
         rayleighDepthVariable = 1.0_RKIND
-      end if
-
-      kineticEnergyBBL = 0.0_RKIND
-      kineticEnergyTBL = 0.0_RKIND
-
-      if (config_use_background_kinetic_energy) then
-        kineticEnergyBBL = config_background_kinetic_energy_bbl
       end if
 
       velVmixOn = .true.

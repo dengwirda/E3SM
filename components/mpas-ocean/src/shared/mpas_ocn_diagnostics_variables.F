@@ -62,13 +62,16 @@ module ocn_diagnostics_variables
    real (kind=RKIND), dimension(:,:), pointer :: vertVelocityTop
    real (kind=RKIND), dimension(:,:), pointer :: vertTransportVelocityTop
    real (kind=RKIND), dimension(:,:), pointer :: vertGMBolusVelocityTop
+   real (kind=RKIND), dimension(:,:), pointer :: vertMLEBolusVelocityTop
    real (kind=RKIND), dimension(:,:), pointer :: normalGMBolusVelocity
+   real (kind=RKIND), dimension(:,:), pointer :: normalMLEvelocity
    real (kind=RKIND), dimension(:,:), pointer :: normalTransportVelocity
    real (kind=RKIND), dimension(:,:), pointer :: RiTopOfCell
    real (kind=RKIND), dimension(:,:), pointer :: RiTopOfEdge
 
    real (kind=RKIND), dimension(:), pointer :: gradSSH
    real (kind=RKIND), dimension(:), pointer :: pressureAdjustedSSH
+   real (kind=RKIND), dimension(:), pointer :: ssh_sal
 
    real (kind=RKIND), dimension(:,:), pointer :: tracersSurfaceValue
    real (kind=RKIND), dimension(:,:), pointer :: tracersSurfaceLayerValue
@@ -96,10 +99,10 @@ module ocn_diagnostics_variables
 
    real (kind=RKIND), dimension(:,:), pointer :: &
       transportVelocityX, transportVelocityY, transportVelocityZ, transportVelocityZonal, &
-      transportVelocityMeridional, GMBolusVelocityX, GMBolusVelocityY, &
-      GMBolusVelocityZ, GMBolusVelocityZonal, GMBolusVelocityMeridional, gmStreamFuncTopOfEdge, &
+      transportVelocityMeridional, eddyVelocityX, eddyVelocityY, &
+      eddyVelocityZ, GMBolusVelocityZonal, GMBolusVelocityMeridional, gmStreamFuncTopOfEdge, &
       GMStreamFuncX, GMStreamFuncY, GMStreamFuncZ, GMStreamFuncZonal, GMStreamFuncMeridional, &
-      gmStreamFuncTopOfCell
+      mleVelocityZonal, mleVelocityMeridional
 
    real (kind=RKIND), dimension(:,:), pointer :: rx1Edge
    real (kind=RKIND), dimension(:,:), pointer :: rx1Cell
@@ -119,11 +122,13 @@ module ocn_diagnostics_variables
    real(kind=RKIND), dimension(:,:), pointer :: RediKappaScaling
    real(kind=RKIND), dimension(:,:), pointer :: RediKappaSfcTaper
    real(kind=RKIND), dimension(:,:), pointer :: k33
+   real(kind=RKIND), dimension(:,:), pointer :: gradBuoyEddy
    real(kind=RKIND), dimension(:), pointer   :: gmBolusKappa
    real(kind=RKIND), dimension(:), pointer   :: cGMphaseSpeed
    real(kind=RKIND), dimension(:,:,:), pointer :: slopeTriadUp, slopeTriadDown
 
    integer, dimension(:), pointer :: indMLD
+   real(kind=RKIND), dimension(:), pointer :: dThreshMLD
    real (kind=RKIND), dimension(:,:), pointer :: velocityX, velocityY, velocityZ
 
    real (kind=RKIND), dimension(:,:), pointer :: vertAleTransportTop
@@ -184,9 +189,7 @@ module ocn_diagnostics_variables
 
    real (kind=RKIND), pointer :: globalVerticalStretchMax, globalVerticalStretchMin
    real (kind=RKIND), dimension(:), pointer :: betaEdge
-   real (kind=RKIND), dimension(:), pointer :: eddyLength
-   real (kind=RKIND), dimension(:), pointer :: eddyTime
-   real (kind=RKIND), dimension(:), pointer :: gmResolutionTaper
+   real (kind=RKIND), dimension(:), pointer :: RediHorizontalTaper, gmHorizontalTaper, RossbyRadius
 
    ! Semi-implicit Array Pointers
    real (kind=RKIND), dimension(:), pointer :: SIvec_r0,SIvec_r00,SIvec_r1 ,SIvec_rh0,SIvec_rh1,SIvec_ph0,SIvec_ph1
@@ -245,7 +248,7 @@ contains
                    wettingVelocityField)
       end if
 
-      if ( config_use_GM ) then
+      if (config_use_GM.or.config_use_Redi) then
          call mpas_pool_get_array(diagnosticsPool, 'RediKappa', &
                    RediKappa)
          call mpas_pool_get_array(diagnosticsPool, 'RediKappaScaling', &
@@ -259,8 +262,17 @@ contains
                    gmBolusKappa)
          call mpas_pool_get_array(diagnosticsPool, 'gmKappaScaling', &
                    gmKappaScaling)
-         call mpas_pool_get_array(diagnosticsPool, 'gmResolutionTaper', &
-                   gmResolutionTaper)
+         call mpas_pool_get_array(diagnosticsPool, 'RediHorizontalTaper', &
+                   RediHorizontalTaper)
+         call mpas_pool_get_array(diagnosticsPool, 'gmHorizontalTaper', &
+                   gmHorizontalTaper)
+         call mpas_pool_get_array(diagnosticsPool, 'RossbyRadius', &
+                   RossbyRadius)
+      end if
+
+      if (config_use_GM .or. config_submesoscale_enable) then
+         call mpas_pool_get_array(diagnosticsPool, 'gradBuoyEddy', &
+                   gradBuoyEddy)
       end if
 
       if ( config_compute_active_tracer_budgets ) then
@@ -342,6 +354,12 @@ contains
                    topographic_wave_drag)
       end if
 
+      if (config_use_tidal_potential_forcing) then
+         call mpas_pool_get_array(diagnosticsPool, &
+                  'ssh_sal', &
+                   ssh_sal)
+      end if
+
       if ( trim(config_ocean_run_mode) == 'init' .or. &
                 config_AM_debugDiagnostics_enable ) then
          call mpas_pool_get_array(diagnosticsPool, 'rx1MaxCell', &
@@ -387,8 +405,6 @@ contains
          ! GM-related fields
          call mpas_pool_get_array(diagnosticsPool, 'cGMphaseSpeed', &
                    cGMphaseSpeed)
-         call mpas_pool_get_array(diagnosticsPool, 'gmStreamFuncTopOfCell', &
-                   gmStreamFuncTopOfCell)
          call mpas_pool_get_array(diagnosticsPool, 'gmStreamFuncTopOfEdge', &
                    gmStreamFuncTopOfEdge)
          call mpas_pool_get_array(diagnosticsPool, 'GMStreamFuncX', &
@@ -401,20 +417,28 @@ contains
                    GMStreamFuncZonal)
          call mpas_pool_get_array(diagnosticsPool, 'GMStreamFuncMeridional', &
                    GMStreamFuncMeridional)
-         call mpas_pool_get_array(diagnosticsPool, 'GMBolusVelocityX', &
-                   GMBolusVelocityX)
-         call mpas_pool_get_array(diagnosticsPool, 'GMBolusVelocityY', &
-                   GMBolusVelocityY)
-         call mpas_pool_get_array(diagnosticsPool, 'GMBolusVelocityZ', &
-                   GMBolusVelocityZ)
+         call mpas_pool_get_array(diagnosticsPool, 'mleVelocityZonal', &
+                   mleVelocityZonal)
+         call mpas_pool_get_array(diagnosticsPool, 'mleVelocityMeridional', &
+                   mleVelocityMeridional)
+         call mpas_pool_get_array(diagnosticsPool, 'eddyVelocityX', &
+                   eddyVelocityX)
+         call mpas_pool_get_array(diagnosticsPool, 'eddyVelocityY', &
+                   eddyVelocityY)
+         call mpas_pool_get_array(diagnosticsPool, 'eddyVelocityZ', &
+                   eddyVelocityZ)
          call mpas_pool_get_array(diagnosticsPool, 'GMBolusVelocityZonal', &
                    GMBolusVelocityZonal)
          call mpas_pool_get_array(diagnosticsPool, 'GMBolusVelocityMeridional', &
                    GMBolusVelocityMeridional)
          call mpas_pool_get_array(diagnosticsPool, 'normalGMBolusVelocity', &
                    normalGMBolusVelocity)
+         call mpas_pool_get_array(diagnosticsPool, 'normalMLEvelocity', &
+                   normalMLEvelocity)
          call mpas_pool_get_array(diagnosticsPool, 'vertGMBolusVelocityTop', &
                    vertGMBolusVelocityTop)
+         call mpas_pool_get_array(diagnosticsPool, 'vertMLEBolusVelocityTop', &
+                   vertMLEBolusVelocityTop)
 
          call mpas_pool_get_array(diagnosticsPool, 'layerThicknessEdgeFlux', &
                    layerThickEdgeFlux)
@@ -572,8 +596,6 @@ contains
       call mpas_pool_get_array(diagnosticsPool, 'barotropicCoriolisTerm', &
                 barotropicCoriolisTerm)
       call mpas_pool_get_array(diagnosticsPool, 'betaEdge', betaEdge)
-      call mpas_pool_get_array(diagnosticsPool, 'eddyLength', eddyLength)
-      call mpas_pool_get_array(diagnosticsPool, 'eddyTime', eddyTime)
       call mpas_pool_get_array(diagnosticsPool, &
                'bottomLayerShortwaveTemperatureFlux', &
                 bottomLayerShortwaveTemperatureFlux)
@@ -585,6 +607,7 @@ contains
                'modifyLandIcePressureMask', &
                 modifyLandIcePressureMask)
       call mpas_pool_get_array(diagnosticsPool, 'indMLD', indMLD)
+      call mpas_pool_get_array(diagnosticsPool, 'dThreshMLD', dThreshMLD)
       call mpas_pool_get_array(diagnosticsPool, 'surfacePressure', &
                 surfacePressure)
 
@@ -634,6 +657,9 @@ contains
       if (config_use_topographic_wave_drag) then
          !$acc enter data create(topographic_wave_drag)
       end if
+      if (config_use_self_attraction_loading) then
+         !$acc enter data copyin(ssh_sal)
+      end if
       if ( trim(config_ocean_run_mode) == 'init' ) then
          !$acc enter data create(                          &
          !$acc                   rx1Edge,                  &
@@ -681,9 +707,9 @@ contains
          !$acc                   normRelVortEdge,                 &
          !$acc                   surfaceVelocity,                 &
          !$acc                   vertVelocityTop,                 &
-         !$acc                   GMBolusVelocityX,                &
-         !$acc                   GMBolusVelocityY,                &
-         !$acc                   GMBolusVelocityZ,                &
+         !$acc                   eddyVelocityX,                   &
+         !$acc                   eddyVelocityY,                   &
+         !$acc                   eddyVelocityZ,                   &
          !$acc                   vertNonLocalFlux,                &
          !$acc                   vertViscTopOfEdge,               &
          !$acc                   gradSSHMeridional,               &
@@ -703,13 +729,15 @@ contains
          !$acc                   BruntVaisalaFreqTop,             &
          !$acc                   vertAleTransportTop,             &
          !$acc                   GMBolusVelocityZonal,            &
+         !$acc                   mleVelocityZonal,                &
          !$acc                   bulkRichardsonNumber,            &
-         !$acc                   gmStreamFuncTopOfCell,           &
          !$acc                   gmStreamFuncTopOfEdge,           &
          !$acc                   indexSSHGradientZonal,           &
          !$acc                   relativeVorticityCell,           &
          !$acc                   normalGMBolusVelocity,           &
+         !$acc                   normalMLEvelocity,               &
          !$acc                   vertGMBolusVelocityTop,          &
+         !$acc                   vertMLEBolusVelocityTop,         &
          !$acc                   transportVelocityZonal,          &
          !$acc                   GMStreamFuncMeridional,          &
          !$acc                   indexSurfaceLayerDepth,          &
@@ -722,6 +750,7 @@ contains
          !$acc                   bulkRichardsonNumberBuoy,        &
          !$acc                   tracersSurfaceLayerValue,        &
          !$acc                   GMBolusVelocityMeridional,       &
+         !$acc                   mleVelocityMeridional,           &
          !$acc                   bulkRichardsonNumberShear,       &
          !$acc                   indexSurfaceVelocityZonal,       &
          !$acc                   normalVelocitySurfaceLayer,      &
@@ -738,7 +767,7 @@ contains
          !$acc                   wettingVelocity              &
          !$acc                   )
       end if
-      if ( config_use_GM ) then
+      if (config_use_GM.or.config_use_Redi) then
          !$acc enter data create(                   &
          !$acc                   RediKappa,         &
          !$acc                   gmBolusKappa,      &
@@ -746,8 +775,13 @@ contains
          !$acc                   RediKappaScaling,  &
          !$acc                   rediLimiterCount,  &
          !$acc                   RediKappaSfcTaper, &
-         !$acc                   gmResolutionTaper  &
+         !$acc                   RediHorizontalTaper,  &
+         !$acc                   gmHorizontalTaper,  &
+         !$acc                   RossbyRadius  &
          !$acc                   )
+      end if
+      if (config_use_GM.or.config_submesoscale_enable) then
+         !$acc enter data create(gradBuoyEddy)
       end if
       if ( config_compute_active_tracer_budgets ) then
          !$acc enter data create(                                         &
@@ -805,11 +839,10 @@ contains
       !$acc                   zTop,                                    &
       !$acc                   xtime,                                   &
       !$acc                   indMLD,                                  &
+      !$acc                   dThreshMLD,                              &
       !$acc                   density,                                 &
       !$acc                   betaEdge,                                &
-      !$acc                   eddyTime,                                &
       !$acc                   pressure,                                &
-      !$acc                   eddyLength,                              &
       !$acc                   thermExpCoeff,                           &
       !$acc                   sfcFlxAttCoeff,                          &
       !$acc                   surfacePressure,                         &
@@ -872,6 +905,9 @@ contains
       if (config_use_topographic_wave_drag) then
          !$acc exit data delete(topographic_wave_drag)
       end if
+      if (config_use_self_attraction_loading) then
+         !$acc exit data delete(ssh_sal)
+      end if
       if ( trim(config_ocean_run_mode) == 'init' ) then
          !$acc exit data delete(                           &
          !$acc                   rx1Edge,                  &
@@ -919,9 +955,9 @@ contains
          !$acc                   normRelVortEdge,                 &
          !$acc                   surfaceVelocity,                 &
          !$acc                   vertVelocityTop,                 &
-         !$acc                   GMBolusVelocityX,                &
-         !$acc                   GMBolusVelocityY,                &
-         !$acc                   GMBolusVelocityZ,                &
+         !$acc                   eddyVelocityX,                   &
+         !$acc                   eddyVelocityY,                   &
+         !$acc                   eddyVelocityZ,                   &
          !$acc                   vertNonLocalFlux,                &
          !$acc                   vertViscTopOfEdge,               &
          !$acc                   gradSSHMeridional,               &
@@ -941,13 +977,15 @@ contains
          !$acc                   BruntVaisalaFreqTop,             &
          !$acc                   vertAleTransportTop,             &
          !$acc                   GMBolusVelocityZonal,            &
+         !$acc                   mleVelocityZonal,                &
          !$acc                   bulkRichardsonNumber,            &
-         !$acc                   gmStreamFuncTopOfCell,           &
          !$acc                   gmStreamFuncTopOfEdge,           &
          !$acc                   indexSSHGradientZonal,           &
          !$acc                   relativeVorticityCell,           &
          !$acc                   normalGMBolusVelocity,           &
+         !$acc                   normalMLEvelocity,               &
          !$acc                   vertGMBolusVelocityTop,          &
+         !$acc                   vertMLEBolusVelocityTop,         &
          !$acc                   transportVelocityZonal,          &
          !$acc                   GMStreamFuncMeridional,          &
          !$acc                   indexSurfaceLayerDepth,          &
@@ -959,6 +997,7 @@ contains
          !$acc                   vertTransportVelocityTop,        &
          !$acc                   bulkRichardsonNumberBuoy,        &
          !$acc                   tracersSurfaceLayerValue,        &
+         !$acc                   mleVelocityMeridional,           &
          !$acc                   GMBolusVelocityMeridional,       &
          !$acc                   bulkRichardsonNumberShear,       &
          !$acc                   indexSurfaceVelocityZonal,       &
@@ -976,7 +1015,7 @@ contains
          !$acc                   wettingVelocity              &
          !$acc                   )
       end if
-      if ( config_use_GM ) then
+      if (config_use_GM.or.config_use_Redi) then
          !$acc exit data delete(                    &
          !$acc                   RediKappa,         &
          !$acc                   gmBolusKappa,      &
@@ -984,8 +1023,13 @@ contains
          !$acc                   RediKappaScaling,  &
          !$acc                   rediLimiterCount,  &
          !$acc                   RediKappaSfcTaper, &
-         !$acc                   gmResolutionTaper  &
+         !$acc                   RediHorizontalTaper,  &
+         !$acc                   gmHorizontalTaper,  &
+         !$acc                   RossbyRadius  &
          !$acc                   )
+      end if
+      if (config_use_GM.or.config_submesoscale_enable) then
+         !$acc exit data delete(gradBuoyEddy)
       end if
       if ( config_compute_active_tracer_budgets ) then
          !$acc exit data delete(                                          &
@@ -1043,11 +1087,10 @@ contains
       !$acc                   zTop,                                    &
       !$acc                   xtime,                                   &
       !$acc                   indMLD,                                  &
+      !$acc                   dThreshMLD,                              &
       !$acc                   density,                                 &
       !$acc                   betaEdge,                                &
-      !$acc                   eddyTime,                                &
       !$acc                   pressure,                                &
-      !$acc                   eddyLength,                              &
       !$acc                   thermExpCoeff,                           &
       !$acc                   sfcFlxAttCoeff,                          &
       !$acc                   surfacePressure,                         &
@@ -1118,9 +1161,9 @@ contains
                  normRelVortEdge,                 &
                  surfaceVelocity,                 &
                  vertVelocityTop,                 &
-                 GMBolusVelocityX,                &
-                 GMBolusVelocityY,                &
-                 GMBolusVelocityZ,                &
+                 eddyVelocityX,                   &
+                 eddyVelocityY,                   &
+                 eddyVelocityZ,                   &
                  vertNonLocalFlux,                &
                  vertViscTopOfEdge,               &
                  gradSSHMeridional,               &
@@ -1140,13 +1183,15 @@ contains
                  BruntVaisalaFreqTop,             &
                  vertAleTransportTop,             &
                  GMBolusVelocityZonal,            &
+                 mleVelocityZonal,                &
                  bulkRichardsonNumber,            &
-                 gmStreamFuncTopOfCell,           &
                  gmStreamFuncTopOfEdge,           &
                  indexSSHGradientZonal,           &
                  relativeVorticityCell,           &
                  normalGMBolusVelocity,           &
+                 normalMLEvelocity,               &
                  vertGMBolusVelocityTop,          &
+                 vertMLEBolusVelocityTop,         &
                  transportVelocityZonal,          &
                  GMStreamFuncMeridional,          &
                  indexSurfaceLayerDepth,          &
@@ -1158,6 +1203,7 @@ contains
                  vertTransportVelocityTop,        &
                  bulkRichardsonNumberBuoy,        &
                  tracersSurfaceLayerValue,        &
+                 mleVelocityMeridional,           &
                  GMBolusVelocityMeridional,       &
                  bulkRichardsonNumberShear,       &
                  indexSurfaceVelocityZonal,       &
@@ -1172,14 +1218,19 @@ contains
       if ( trim(config_ocean_run_mode) == 'forward' ) then
          nullify(wettingVelocity)
       end if
-      if ( config_use_GM ) then
+      if (config_use_GM.or.config_use_Redi) then
          nullify(RediKappa,         &
                  gmBolusKappa,      &
                  gmKappaScaling,    &
                  RediKappaScaling,  &
                  rediLimiterCount,  &
                  RediKappaSfcTaper, &
-                 gmResolutionTaper)
+                 RediHorizontalTaper, &
+                 gmHorizontalTaper, &
+                 RossbyRadius)
+      end if
+      if (config_use_GM.or.config_submesoscale_enable) then
+         nullify(gradBuoyEddy)
       end if
       if ( config_compute_active_tracer_budgets ) then
          nullify(activeTracerHorMixTendency,              &
@@ -1194,6 +1245,9 @@ contains
       end if
       if ( config_use_activeTracers_surface_restoring ) then
          nullify(salinitySurfaceRestoringTendency)
+      end if
+      if ( config_use_self_attraction_loading ) then
+         nullify(ssh_sal)
       end if
       if ( trim(config_time_integrator) == 'split_implicit' ) then
          nullify(SIvec_r0,              &
@@ -1230,11 +1284,10 @@ contains
               zTop,                                    &
               xtime,                                   &
               indMLD,                                  &
+              dThreshMLD,                              &
               density,                                 &
               betaEdge,                                &
-              eddyTime,                                &
               pressure,                                &
-              eddyLength,                              &
               thermExpCoeff,                           &
               sfcFlxAttCoeff,                          &
               surfacePressure,                         &

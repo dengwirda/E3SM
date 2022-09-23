@@ -37,6 +37,7 @@ module ocn_diagnostics
    use ocn_diagnostics_variables
    use ocn_mesh
    use ocn_surface_land_ice_fluxes
+   use ocn_vertical_advection
 
    implicit none
    private
@@ -55,11 +56,12 @@ module ocn_diagnostics
    !--------------------------------------------------------------------
 
    public :: ocn_diagnostic_solve, &
+             ocn_diagnostic_solve_layerThicknessEdge, &
              ocn_relativeVorticity_circulation, &
              ocn_vert_transport_velocity_top, &
              ocn_fuperp, &
              ocn_filter_btr_mode_tend_vel, &
-             ocn_reconstruct_gm_vectors, &
+             ocn_reconstruct_eddy_vectors, &
              ocn_compute_kpp_input_fields, &
              ocn_validate_state, &
              ocn_build_log_filename, &
@@ -74,6 +76,13 @@ module ocn_diagnostics
    integer :: ke_cell_flag, ke_vertex_flag
    real (kind=RKIND) ::  fCoef
    real (kind=RKIND), pointer ::  coef_3rd_order
+
+   ! Methods for computing thickness at edges for flux calculations
+   integer :: thickEdgeFluxChoice  ! choice of thickness flux type
+   integer, parameter :: &
+      thickEdgeFluxUnknown = 0, &! type unknown or unset
+      thickEdgeFluxCenter  = 1, &! use mean thickness of cell neighbors
+      thickEdgeFluxUpwind  = 2   ! use upwind cell thickness at edge
 
 !***********************************************************************
 
@@ -103,19 +112,19 @@ contains
       integer, intent(in), optional :: timeLevelIn !< Input: Time level in state
       logical, intent(in), optional :: full   !< Input: Run all computations?
 
-      integer :: iEdge, iCell
-      integer :: err, nCells, nEdges, nVertices
+      integer :: iEdge, iCell, iTracer, k, kmin, kmax
+      integer :: err, nCells, nEdges, nVertices, numTracers
+      integer :: timeLevel
 
       real (kind=RKIND) :: coef_3rd_order
 
       real (kind=RKIND), dimension(:), pointer :: &
         ssh,  seaIcePressure, atmosphericPressure
       real (kind=RKIND), dimension(:,:), pointer :: &
-        layerThickness, normalVelocity
+        layerThickness, layerThicknessLag, normalVelocity
 
       real (kind=RKIND), dimension(:,:,:), pointer :: activeTracers
 
-      integer :: timeLevel
       integer, pointer :: indexTemperature, indexSalinity
 
       logical :: full_compute = .true.
@@ -213,7 +222,8 @@ contains
 
       ! inputs: layerThickness, normalVelocity
       ! output: layerThickEdgeMean, layerThickEdgeFlux
-      call ocn_diagnostic_solve_layerThicknessEdge(normalVelocity, layerThickness, layerThickEdgeMean, layerThickEdgeFlux)
+      call ocn_diagnostic_solve_layerThicknessEdge(normalVelocity, &
+                                                   layerThickness)
 
       ! inputs: normalVelocity
       ! outputs: relativeVorticity, circulation
@@ -222,13 +232,65 @@ contains
       ! inputs: relativeVorticity, layerThickEdgeFlux, normalVelocity, normalTransportVelocity, 
       !         normalGMBolusVelocity
       ! outputs: vertTransportVelocityTop, vertGMBolusVelocityTop, relativeVorticityCell, 
-      !          divergence, kineticEnergyCell, tangentialVelocity
+      !          divergence, kineticEnergyCell, tangentialVelocity, vertMLEBolusVelocityTop
       ! in and out: vertVelocityTop
       call ocn_diagnostic_solve_vortVel(relativeVorticity, &
              layerThickEdgeFlux, normalVelocity, normalTransportVelocity, &
-             normalGMBolusVelocity, vertVelocityTop, vertTransportVelocityTop, &
-             vertGMBolusVelocityTop, relativeVorticityCell, divergence, &
-             kineticEnergyCell, tangentialVelocity)
+             vertVelocityTop, vertTransportVelocityTop, relativeVorticityCell, &
+             divergence, kineticEnergyCell, tangentialVelocity)
+
+      !compute vertical velocity due to gm bolus velocity if requested
+      if (config_use_gm) then
+         call ocn_diagnostic_solve_GMvel(layerThickEdgeFlux, normalGMBolusVelocity, vertGMBolusVelocityTop)
+      end if
+
+      !compute vertical velocity due to submesoscale eddies (MLE) velocity if requested
+      if (config_submesoscale_enable) then
+         call ocn_diagnostic_solve_MLEvel(layerThickEdgeFlux, normalMLEVelocity, vertMLEBolusVelocityTop)
+      end if
+
+      if ( configVertAdvMethod == vertAdvRemap ) then
+
+         ! Overwrite vertVelocityTop with exact Eulerian solution from remapping
+         call mpas_pool_get_array(statePool, 'layerThicknessLag', &
+             layerThicknessLag, timeLevel)
+         call ocn_diagnostic_solve_vertVel_remap(layerThickness, &
+             layerThicknessLag, dt, vertVelocityTop)
+
+         ! Overwrite vertical tracer budget terms with new vertVelocityTop
+         if ( config_compute_active_tracer_budgets ) then
+            numTracers = size(activeTracers, dim=1)
+            do iTracer = 1, numTracers
+               !$omp parallel
+               !$omp do schedule(runtime) private(k,kmin,kmax)
+               do iCell = 1, nCells
+                  kmin = minLevelCell(iCell)
+                  kmax = maxLevelCell(iCell)
+
+                  activeTracerVerticalAdvectionTopFlux(iTracer, :, iCell) = 0.0_RKIND
+                  do k = kmin+1, kmax
+                     activeTracerVerticalAdvectionTopFlux(iTracer, k, iCell) = &
+                           min(0.0_RKIND,vertVelocityTop(k, iCell))* &
+                                         activeTracers(iTracer, k-1, iCell) &
+                         + max(0.0_RKIND,vertVelocityTop(k,iCell))* &
+                                         activeTracers(iTracer, k, iCell)
+                  enddo
+
+                  do k = kmin, kmax-1
+                     activeTracerVerticalAdvectionTendency(iTracer, k, iCell) = ( &
+                          activeTracerVerticalAdvectionTopFlux(iTracer, k+1, iCell) &
+                        - activeTracerVerticalAdvectionTopFlux(iTracer, k, iCell) &
+                        ) / layerThickness(k, iCell)
+                  enddo
+                  activeTracerVerticalAdvectionTendency(iTracer, kmax, iCell) = &
+                     - activeTracerVerticalAdvectionTopFlux(iTracer, kmax, iCell) &
+                     / layerThickness(kmax, iCell)
+               enddo
+               !$omp end do
+               !$omp end parallel
+            enddo
+         endif
+      endif
 
       !
       ! Compute kinetic energy
@@ -323,16 +385,21 @@ contains
       ! tracersSurfaceValue calc
       ! inputs: activeTracers, minLevelCell
       ! outputs: tracersSurfaceValue
-!     !$acc parallel loop !!!present(tracersSurfaceValue, activeTracers, minLevelCell)
+      !$acc kernels present(tracersSurfaceValue, activeTracers, minLevelCell)
 #else
       !$omp parallel
       !$omp do schedule(runtime)
 #endif
+#ifdef MPAS_OPENACC
+      !$acc loop independent
+#endif
       do iCell = 1, nCells
-         tracersSurfaceValue(:, iCell) = activeTracers(:, minLevelCell(iCell), iCell)
+         do iTracer = 1,size(tracersSurfaceValue,1)
+            tracersSurfaceValue(iTracer, iCell) = activeTracers(iTracer, minLevelCell(iCell), iCell)
+         enddo
       end do
 #ifdef MPAS_OPENACC
-      !$acc update device(tracersSurfaceValue)
+      !$acc end kernels
 #else
       !$omp end do
 #endif
@@ -564,10 +631,10 @@ contains
          do i = 1, vertexDegree
             iEdge = edgesOnVertex(i, iVertex)
             do k = minLevelVertexTop(iVertex), maxLevelVertexBot(iVertex)
-              ! min/maxLevelVertex may ref. outside of min/maxLevelEdge, so careful with masking!
-              r_tmp = dcEdge(iEdge) * normalVelocity(k, iEdge) * edgeSignOnVertex(i, iVertex) * edgeMask(k, iEdge)
-              circulation(k, iVertex) = circulation(k, iVertex) + r_tmp
-              relativeVorticity(k, iVertex) = relativeVorticity(k, iVertex) + r_tmp * invAreaTri1
+               ! min/maxLevelVertex may ref. outside of min/maxLevelEdge, so careful with masking!
+               r_tmp = dcEdge(iEdge) * normalVelocity(k, iEdge) * edgeSignOnVertex(i, iVertex) * edgeMask(k, iEdge)
+               circulation(k, iVertex) = circulation(k, iVertex) + r_tmp
+               relativeVorticity(k, iVertex) = relativeVorticity(k, iVertex) + r_tmp * invAreaTri1
             end do
          end do
       end do
@@ -584,112 +651,154 @@ contains
 !
 !  routine ocn_diagnostic_solve_layerThicknessEdge
 !
-!> \brief   Computes diagnostic variables layerThickEdgeFlux and
-!>          layerThickEdgeMean
+!> \brief   Computes layer thickness at edge
 !> \author  Matt Turner
 !> \date    October 2020
 !> \details
-!>  This routine computes the diagnostic variables layerThickEdgeFlux and
-!>  layerThickEdgeMean
+!>  This routine computes the diagnostic variables layerThickEdgeFlux
+!>  and layerThickEdgeMean. The Mean is a simple mean across the edge
+!>  but the Flux value can either be the mean or an upwind value,
+!>  depending on user input.
 !
 !-----------------------------------------------------------------------
-   subroutine ocn_diagnostic_solve_layerThicknessEdge(normalVelocity, layerThickness, &
-                layerThicknessEdgeMean, layerThicknessEdgeFlux)!{{{
 
-      implicit none
+   subroutine ocn_diagnostic_solve_layerThicknessEdge(normalVelocity, &
+                                                      layerThickness)!{{{
 
       !-----------------------------------------------------------------
-      !
       ! input variables
-      !
       !-----------------------------------------------------------------
 
       real (kind=RKIND), dimension(:,:), intent(in) :: &
-         normalVelocity     !< Input: transport
-      real (kind=RKIND), dimension(:,:), intent(in) :: &
-        layerThickness      !< Input: layer thickness
+         normalVelocity,  &!< [in] transport
+         layerThickness    !< [in] layer thickness at cell center
 
       !-----------------------------------------------------------------
-      !
       ! output variables
-      !
       !-----------------------------------------------------------------
 
-      real (kind=RKIND), dimension(:,:), intent(out) :: &
-         layerThicknessEdgeMean, & !< Output: centered layer thickness on edge
-         layerThicknessEdgeFlux    !< Output: flux-related layer thickness on edge
+      ! Outputs are the shared variables from diagnostic_variables:
+      !real (kind=RKIND), dimension(:,:), intent(out) :: &
+      !   layerThickEdgeMean, & !< [out] centered layer thickness on edge
+      !   layerThickEdgeFlux    !< [out] flux-related thickness on edge
 
       !-----------------------------------------------------------------
-      !
       ! local variables
-      !
       !-----------------------------------------------------------------
 
-      integer :: iEdge, k, cell1, cell2, nEdges
+      integer :: &
+         iEdge, k,     &! edge and vertical loop indices
+         cell1, cell2, &! neighbor cell indices across an edge
+         kmin, kmax     ! min,max active vertical levels
 
-      !
-      ! Compute height on cell edges at velocity locations
-      !   Namelist options control the order of accuracy of the reconstructed layerThicknessEdgeFlux value
-      !
+      ! End preamble
+      !-----------------------------------------------------------------
+      ! Begin code
 
-      nEdges = nEdgesAll
-
+      ! Compute mean layer thickness at edge
 #ifdef MPAS_OPENACC
-      !$acc parallel loop present(normalVelocity, layerThickness, minLevelEdgeBot, maxLevelEdgeTop, layerThicknessEdgeMean, cellsOnEdge)
+      !$acc parallel loop &
+      !$acc    present(layerThickness, layerThickEdgeMean, &
+      !$acc            minLevelEdgeBot, maxLevelEdgeTop, cellsOnEdge) &
+      !$acc    private(k, kmin, kmax, cell1, cell2)
 #else
       !$omp parallel
-      !$omp do schedule(runtime) private(cell1, cell2, k)
+      !$omp do schedule(runtime) private(k, kmin, kmax, cell1, cell2)
 #endif
-      do iEdge = 1, nEdges
-        ! initialize layerThicknessEdgeMean to avoid divide by zero and NaN problems.
-        layerThicknessEdgeMean(:, iEdge) = -1.0e34_RKIND
-        cell1 = cellsOnEdge(1,iEdge)
-        cell2 = cellsOnEdge(2,iEdge)
-        do k = minLevelEdgeBot(iEdge), maxLevelEdgeTop(iEdge)
-          ! central differenced
-          layerThicknessEdgeMean(k,iEdge) = 0.5_RKIND * (layerThickness(k,cell1) + layerThickness(k,cell2))
-        end do
+      do iEdge = 1, nEdgesAll
+         kmin = minLevelEdgeBot(iEdge)
+         kmax = maxLevelEdgeTop(iEdge)
+         cell1 = cellsOnEdge(1,iEdge)
+         cell2 = cellsOnEdge(2,iEdge)
+         do k = 1,nVertLevels
+            ! initialize layerThicknessEdgeMean to avoid divide by
+            ! zero and NaN problems.
+            layerThickEdgeMean(k,iEdge) = -1.0e34_RKIND
+         end do
+         do k = kmin,kmax
+            ! central differenced
+            layerThickEdgeMean(k,iEdge) = 0.5_RKIND * &
+                                         (layerThickness(k,cell1) + &
+                                          layerThickness(k,cell2))
+         end do
       end do
 #ifndef MPAS_OPENACC
       !$omp end do
       !$omp end parallel
 #endif
-      if (trim(config_thickness_flux_type) .eq. 'centered') then
-        layerThicknessEdgeFlux = layerThicknessEdgeMean
-      else
-        if (config_use_wetting_drying .and. (trim(config_thickness_flux_type) .ne. 'centered')) then
-          if ( trim(config_thickness_flux_type) .eq. 'upwind') then
+
+      ! Compute edge flux based on option set on init
+      select case (thickEdgeFluxChoice)
+
+      case (thickEdgeFluxCenter)
+         ! Use centered (mean) thickness as flux value
+
 #ifdef MPAS_OPENACC
-            !$acc parallel loop present(normalVelocity, layerThickness, minLevelEdgeBot, maxLevelEdgeTop, layerThicknessEdgeFlux, cellsOnEdge)
+         !$acc parallel loop collapse(2) &
+         !$acc    present(layerThickEdgeFlux, layerThickEdgeMean)
 #else
-            !$omp parallel
-            !$omp do schedule(runtime) private(cell1, cell2, k)
+         !$omp parallel
+         !$omp do schedule(runtime) private(k)
 #endif
-            do iEdge = 1, nEdges
-              ! initialize layerThicknessEdgeFlux to avoid divide by zero and NaN problems.
-              layerThicknessEdgeFlux(:, iEdge) = -1.0e34_RKIND
-              cell1 = cellsOnEdge(1,iEdge)
-              cell2 = cellsOnEdge(2,iEdge)
-              do k = minLevelEdgeBot(iEdge), maxLevelEdgeTop(iEdge)
-                ! upwind
-                if (normalVelocity(k, iEdge) > 0.0_RKIND) then
-                  layerThicknessEdgeFlux(k,iEdge) = layerThickness(k,cell1)
-                elseif (normalVelocity(k, iEdge) < 0.0_RKIND) then
-                  layerThicknessEdgeFlux(k,iEdge) = layerThickness(k,cell2)
-                else
-                  layerThicknessEdgeFlux(k,iEdge) = max(layerThickness(k,cell1), layerThickness(k,cell2))
-                end if
-              end do
-            end do
+         do iEdge = 1, nEdgesAll
+         do k = 1,nVertLevels
+            layerThickEdgeFlux(k,iEdge) = &
+            layerThickEdgeMean(k,iEdge)
+         end do
+         end do
 #ifndef MPAS_OPENACC
-            !$omp end do
-            !$omp end parallel
+         !$omp end do
+         !$omp end parallel
 #endif
-          end if
-        else
-          call mpas_log_write('Thickness flux option of ' // trim(config_thickness_flux_type) // 'is not known', MPAS_LOG_CRIT)
-        end if
-      end if
+
+      case (thickEdgeFluxUpwind)
+         ! Use upwind thickness as the edge flux value
+
+#ifdef MPAS_OPENACC
+         !$acc parallel loop &
+         !$acc    present(normalVelocity, layerThickness, &
+         !$acc            minLevelEdgeBot, maxLevelEdgeTop, &
+         !$acc            layerThickEdgeFlux, cellsOnEdge) &
+         !$acc    private(k, kmin, kmax, cell1, cell2)
+#else
+         !$omp parallel
+         !$omp do schedule(runtime) private(k, kmin, kmax, cell1, cell2)
+#endif
+         do iEdge = 1, nEdgesAll
+            kmin = minLevelEdgeBot(iEdge)
+            kmax = maxLevelEdgeTop(iEdge)
+            cell1 = cellsOnEdge(1,iEdge)
+            cell2 = cellsOnEdge(2,iEdge)
+            do k=1,nVertLevels
+               ! initialize layerThicknessEdgeFlux to avoid divide by
+               ! zero and NaN problems.
+               layerThickEdgeFlux(k,iEdge) = -1.0e34_RKIND
+            end do
+            do k = kmin,kmax
+               if (normalVelocity(k,iEdge) > 0.0_RKIND) then
+                  layerThickEdgeFlux(k,iEdge) = layerThickness(k,cell1)
+               elseif (normalVelocity(k,iEdge) < 0.0_RKIND) then
+                  layerThickEdgeFlux(k,iEdge) = layerThickness(k,cell2)
+               else
+                  layerThickEdgeFlux(k,iEdge) = &
+                                      max(layerThickness(k,cell1), &
+                                          layerThickness(k,cell2))
+               end if
+            end do
+         end do
+#ifndef MPAS_OPENACC
+         !$omp end do
+         !$omp end parallel
+#endif
+
+      case default
+         ! Should have been caught on init
+         call mpas_log_write('Thickness flux option unknown', &
+                             MPAS_LOG_CRIT)
+
+      end select
+
+   !--------------------------------------------------------------------
 
    end subroutine ocn_diagnostic_solve_layerThicknessEdge!}}}
 
@@ -1143,7 +1252,6 @@ contains
       deallocate(normalizedPlanetaryVorticityVertex, &
                  normalizedRelativeVorticityVertex)
 
-
    end subroutine ocn_diagnostic_solve_vorticity!}}}
 
 !***********************************************************************
@@ -1278,13 +1386,235 @@ contains
 !>    values at surface layer
 !
 !-----------------------------------------------------------------------
-   subroutine ocn_diagnostic_solve_surfaceLayer(layerThickness, activeTracers, &
-                layerThicknessEdgeFlux, normalVelocity, tracersSurfaceLayerValue,  &
-                indexSurfaceLayerDepth, normalVelocitySurfaceLayer, &
-                surfaceFluxAttenuationCoefficient, surfaceFluxAttenuationCoefficientRunoff)!{{{
 
-      implicit none
+   subroutine ocn_diagnostic_solve_surfaceLayer(layerThickness, &
+                activeTracers, layerThicknessEdgeFlux, normalVelocity, &
+                tracersSurfaceLayerValue, indexSurfaceLayerDepth, &
+                normalVelocitySurfaceLayer, &
+                surfaceFluxAttenuationCoefficient, &
+                surfaceFluxAttenuationCoefficientRunoff)!{{{
 
+      !-----------------------------------------------------------------
+      ! input variables
+      !-----------------------------------------------------------------
+
+      real (kind=RKIND), dimension(:,:), intent(in) :: &
+         layerThickness,         &!< [in] layer thickness
+         layerThicknessEdgeFlux, &!< [in] layer thick at edge (flx form)
+         normalVelocity           !< [in] velocity
+
+      real (kind=RKIND), dimension(:,:,:), intent(in) :: &
+         activeTracers            !< [in] tracers to be averaged
+
+      !-----------------------------------------------------------------
+      ! output variables
+      !-----------------------------------------------------------------
+
+      real (kind=RKIND), dimension(:,:), intent(out) :: &
+         tracersSurfaceLayerValue     !< [out] tracer avg over sfc lyr
+
+      real (kind=RKIND), dimension(:), intent(out) :: &
+         indexSurfaceLayerDepth,     &!< [out] layer index at sfc lyr depth
+         normalVelocitySurfaceLayer, &!< [out] avg velocity over sfc layer
+         surfaceFluxAttenuationCoefficient, &!< [out] sfc flx attenuation
+         surfaceFluxAttenuationCoefficientRunoff !< [out] sfc flx attenuation
+
+      !-----------------------------------------------------------------
+      ! local variables
+      !-----------------------------------------------------------------
+
+      integer :: &
+         nCells, nEdges,  &! num of cells, edges
+         n, nTracers,     &! num of tracers, tracer index
+         iCell, iEdge, k, &! loop indices for cell, edge vertical
+         kmin, kmax, ksfc,&! vertical indices for active, sfc layers
+         cell1, cell2      ! neighbor cell indices across edge
+
+      real(kind=RKIND) :: &
+         sfcLayerDepth,   &! surface layer depth
+         sumSfcLayer,     &! running sum of depth for sfc lyr calc
+         fracSfcLayer,    &! fraction of layer in which sfc layer exists
+         rSfcLayer         ! real vertical layer index for sfc lyr
+
+      ! End preamble
+      !-----------------------------------------------------------------
+      ! Begin code
+
+      ! average tracer values over the ocean surface layer
+      ! the ocean surface layer is generally assumed to be about 0.1 of
+      !    the boundary layer depth
+
+      ! sfc layer averages currently only used when KPP on
+      if (config_use_cvmix_kpp) then
+
+         sfcLayerDepth = config_cvmix_kpp_surface_layer_averaging
+         nTracers = size(activeTracers, dim=1)
+#ifdef MPAS_OPENACC
+         !$acc parallel loop gang vector &
+         !$acc    present(tracersSurfaceLayerValue, activeTracers, &
+         !$acc            layerThickness, minLevelCell, maxLevelCell, &
+         !$acc            indexSurfaceLayerDepth) &
+         !$acc    private(k, kmin, kmax, ksfc, &
+         !$acc            rSfcLayer, sumSfcLayer, fracSfcLayer)
+#else
+         !$omp parallel
+         !$omp do schedule(runtime) &
+         !$omp    private(k, kmin, kmax, ksfc, &
+         !$omp            rSfcLayer, sumSfcLayer, fracSfcLayer)
+#endif
+         do iCell=1,nCellsOwned
+            kmin = minLevelCell(iCell)
+            kmax = maxLevelCell(iCell)
+            sumSfcLayer = 0.0_RKIND
+            rSfcLayer = kmax
+#ifdef MPAS_OPENACC
+            !$acc loop seq
+#endif
+            do k = kmin,kmax
+               sumSfcLayer = sumSfcLayer + layerThickness(k,iCell)
+               if (sumSfcLayer > sfcLayerDepth) then
+                  sumSfcLayer = sumSfcLayer - layerThickness(k,iCell)
+                  rSfcLayer = (k-1) + (sfcLayerDepth - sumSfcLayer)/ &
+                                       layerThickness(k,iCell)
+                  exit
+               endif
+            end do ! k
+            indexSurfaceLayerDepth(iCell) = rSfcLayer
+            ksfc = int(rSfcLayer)
+            fracSfcLayer = rSfcLayer - real(ksfc,RKIND)
+
+            tracersSurfaceLayerValue(:,iCell) = 0.0_RKIND
+#ifdef MPAS_OPENACC
+            !$acc loop seq
+#endif
+            do k=kmin,ksfc
+            do n=1,nTracers
+               tracersSurfaceLayerValue(n,iCell) = &
+               tracersSurfaceLayerValue(n,iCell) + &
+                        activeTracers(n,k,iCell)*layerThickness(k,iCell)
+            enddo
+            enddo
+
+            k = min(ksfc+1, kmax)
+            do n=1,nTracers
+               tracersSurfaceLayerValue(n,iCell) = &
+              (tracersSurfaceLayerValue(n,iCell) + &
+                         fracSfcLayer*activeTracers(n,k,iCell)* &
+                         layerThickness(k,iCell)) / sfcLayerDepth
+            enddo
+         enddo ! cell loop
+#ifndef MPAS_OPENACC
+         !$omp end do
+         !$omp end parallel
+#endif
+
+         ! average normal velocity values over the ocean surface layer
+         ! the ocean surface layer is generally assumed to be about 0.1
+         !    of the boundary layer depth
+
+#ifdef MPAS_OPENACC
+         !$acc parallel loop gang vector &
+         !$acc    present(normalVelocitySurfaceLayer, normalVelocity, &
+         !$acc            minLevelEdgeBot, maxLevelEdgeTop, &
+         !$acc            cellsOnEdge, layerThicknessEdgeFlux) &
+         !$acc    private(k, kmin, kmax, ksfc, cell1, cell2, &
+         !$acc            rSfcLayer, sumSfcLayer, fracSfcLayer)
+#else
+         !$omp parallel
+         !$omp do schedule(runtime) &
+         !$omp    private(k, kmin, kmax, ksfc, cell1, cell2, &
+         !$omp            rSfcLayer, sumSfcLayer, fracSfcLayer)
+#endif
+         do iEdge=1,nEdgesOwned
+            cell1 = cellsOnEdge(1,iEdge)
+            cell2 = cellsOnEdge(2,iEdge)
+            kmin  = minLevelEdgeBot(iEdge)
+            kmax  = maxLevelEdgeTop(iEdge)
+            sumSfcLayer = 0.0_RKIND
+            rSfcLayer   = min(kmin,kmax)
+
+#ifdef MPAS_OPENACC
+            !$acc loop seq
+#endif
+            do k = kmin,kmax
+               sumSfcLayer = sumSfcLayer + layerThicknessEdgeFlux(k,iEdge)
+               if (sumSfcLayer > sfcLayerDepth) then
+                  sumSfcLayer = sumSfcLayer &
+                              - layerThicknessEdgeFlux(k,iEdge)
+                  rSfcLayer = (k-1) + (sfcLayerDepth - sumSfcLayer)/ &
+                                       layerThicknessEdgeFlux(k,iEdge)
+                  exit
+               endif
+            end do ! k
+            ksfc = int(rSfcLayer)
+            fracSfcLayer = rSfcLayer - real(ksfc,RKIND)
+
+            normalVelocitySurfaceLayer(iEdge) = 0.0_RKIND
+#ifdef MPAS_OPENACC
+            !$acc loop seq
+#endif
+            do k = kmin,ksfc
+               normalVelocitySurfaceLayer(iEdge) = &
+               normalVelocitySurfaceLayer(iEdge) + &
+                                       normalVelocity(k,iEdge)* &
+                                       layerThicknessEdgeFlux(k,iEdge)
+            end do
+            k = ksfc+1
+            if (k <= kmax) then
+               normalVelocitySurfaceLayer(iEdge) = &
+              (normalVelocitySurfaceLayer(iEdge) + &
+                        fracSfcLayer*normalVelocity(k,iEdge)* &
+                        layerThicknessEdgeFlux(k,iEdge)) / sfcLayerDepth
+            end if
+         enddo ! edge loop
+#ifndef MPAS_OPENACC
+         !$omp end do
+         !$omp end parallel
+#endif
+
+      endif ! KPP on
+
+      ! compute the attenuation coefficient for surface fluxes
+
+      nCells = nCellsHalo( 1 )
+
+#ifdef MPAS_OPENACC
+      !$acc parallel loop &
+      !$acc    present(surfaceFluxAttenuationCoefficient, &
+      !$acc            surfaceFluxAttenuationCoefficientRunoff)
+#else
+      !$omp parallel
+      !$omp do schedule(runtime)
+#endif
+      do iCell = 1, nCells
+         surfaceFluxAttenuationCoefficient(iCell) = &
+                      config_flux_attenuation_coefficient
+         surfaceFluxAttenuationCoefficientRunoff(iCell) = &
+                      config_flux_attenuation_coefficient_runoff
+      end do
+#ifndef MPAS_OPENACC
+      !$omp end do
+      !$omp end parallel
+#endif
+
+   !--------------------------------------------------------------------
+
+   end subroutine ocn_diagnostic_solve_surfaceLayer !}}}
+
+!***********************************************************************
+!
+!  routine ocn_diagnostic_solve_GMvel
+!
+!> \brief   Computes vertical velocity from GM bolus velocity
+!> \author  Luke Van Roekel
+!> \date    August 2022
+!> \details
+!>  This routine computes the diagnostic vertical velocity from 
+!>    the normal velocity due to GM bolus velocity
+!
+!-----------------------------------------------------------------------
+   subroutine ocn_diagnostic_solve_GMvel(layerThickEdgeFlux, normalGMBolusVelocity, &
+                                         vertGMBolusVelocityTop)!{{{
       !-----------------------------------------------------------------
       !
       ! input variables
@@ -1292,13 +1622,8 @@ contains
       !-----------------------------------------------------------------
 
       real (kind=RKIND), dimension(:,:), intent(in) :: &
-        layerThickness      !< Input: layer thickness
-      real (kind=RKIND), dimension(:,:,:), intent(in) :: &
-        activeTracers
-      real (kind=RKIND), dimension(:,:), intent(in) :: &
-        layerThicknessEdgeFlux
-      real (kind=RKIND), dimension(:,:), intent(in) :: &
-        normalVelocity
+         layerThickEdgeFlux,     &
+         normalGMBolusVelocity
 
       !-----------------------------------------------------------------
       !
@@ -1307,15 +1632,7 @@ contains
       !-----------------------------------------------------------------
 
       real (kind=RKIND), dimension(:,:), intent(out) :: &
-         tracersSurfaceLayerValue
-      real (kind=RKIND), dimension(:), intent(out) :: &
-         indexSurfaceLayerDepth
-      real (kind=RKIND), dimension(:), intent(out) :: &
-         normalVelocitySurfaceLayer
-      real (kind=RKIND), dimension(:), intent(out) :: &
-         surfaceFluxAttenuationCoefficient
-      real (kind=RKIND), dimension(:), intent(out) :: &
-         surfaceFluxAttenuationCoefficientRunoff
+         vertGMBolusVelocityTop
 
       !-----------------------------------------------------------------
       !
@@ -1324,138 +1641,165 @@ contains
       !-----------------------------------------------------------------
 
       integer :: nCells, nEdges
-      integer :: iCell, iEdge
-      integer :: k
-      real(kind=RKIND) :: rSurfaceLayer
-      integer :: cell1, cell2
-      real(kind=RKIND) :: surfaceLayerDepth
-      real(kind=RKIND) :: sumSurfaceLayer
+      integer :: iCell, iVertex, iEdge
+      integer :: i, j, k
+      integer :: edgeSignOnCell_temp, eoe
+      real(kind=RKIND) :: invAreaCell1
+      real(kind=RKIND) :: dcEdge_temp, dvEdge_temp, r_tmp, weightsOnEdge_temp
 
-      !
-      ! average tracer values over the ocean surface layer
-      ! the ocean surface layer is generally assumed to be about 0.1 of the boundary layer depth
-      if(config_use_cvmix_kpp) then
+      real (kind=RKIND), dimension(:), allocatable:: div_huGMBolus
 
-        nCells = nCellsOwned
-        surfaceLayerDepth = config_cvmix_kpp_surface_layer_averaging
 #ifdef MPAS_OPENACC
-        !$acc parallel loop gang vector &
-        !$acc          present(tracersSurfaceLayerValue, indexSurfaceLayerDepth, maxLevelCell, &
-        !$acc                  layerThickness, activeTracers, minLevelCell) &
-        !$acc          private(k, rSurfaceLayer)
-#else
-        !$omp parallel
-        !$omp do schedule(runtime) private(sumSurfaceLayer, k, rSurfaceLayer)
-#endif
-        do iCell=1,nCells
-          sumSurfaceLayer=0.0_RKIND
-          tracersSurfaceLayerValue(:,iCell) = 0.0_RKIND
-          indexSurfaceLayerDepth(iCell) = -9.e30
-#ifdef MPAS_OPENACC
-          !$acc loop seq
-#endif
-          do k = minLevelCell(iCell), maxLevelCell(iCell)
-           sumSurfaceLayer = sumSurfaceLayer + layerThickness(k,iCell)
-           rSurfaceLayer = maxLevelCell(iCell)
-           if(sumSurfaceLayer.gt.surfaceLayerDepth) then
-             sumSurfaceLayer = sumSurfaceLayer - layerThickness(k,iCell)
-             rSurfaceLayer = int(k-1) + (surfaceLayerDepth-sumSurfaceLayer)/layerThickness(k,iCell)
-             indexSurfaceLayerDepth(iCell) = rSurfaceLayer
-             exit
-           endif
-          end do
-          tracersSurfaceLayerValue(:, iCell) = 0.0_RKIND
-#ifdef MPAS_OPENACC
-          !$acc loop seq
-#endif
-          do k=1,int(rSurfaceLayer)
-            tracersSurfaceLayerValue(:,iCell) = tracersSurfaceLayerValue(:,iCell) + activeTracers(:,k,iCell) &
-                                              * layerThickness(k,iCell)
-          enddo
-          k=min( int(rSurfaceLayer)+1, maxLevelCell(iCell) )
-          tracersSurfaceLayerValue(:,iCell) = (tracersSurfaceLayerValue(:,iCell) + fraction(rSurfaceLayer) &
-                                            * activeTracers(:,k,iCell) * layerThickness(k,iCell)) / surfaceLayerDepth
-        enddo
-#ifndef MPAS_OPENACC
-        !$omp end do
-        !$omp end parallel
+      !$acc declare device_resident(div_huGMBolus)
 #endif
 
-        nEdges = nEdgesOwned
+      ! Need owned cells for relativeVorticityCell
+      nCells = nCellsOwned
 
-        !
-        ! average normal velocity values over the ocean surface layer
-        ! the ocean surface layer is generally assumed to be about 0.1 of the boundary layer depth
-        !
+      if (.not. config_use_gm) return
 
-        surfaceLayerDepth = config_cvmix_kpp_surface_layer_averaging
+      allocate(div_huGMBolus(nVertLevels))
 #ifdef MPAS_OPENACC
-        !$acc parallel loop gang vector &
-        !$acc          present(normalVelocitySurfaceLayer, cellsOnEdge, maxLevelEdgeTop, &
-        !$acc                  layerThicknessEdgeFlux, normalVelocity, minLevelEdgeBot) &
-        !$acc          private(cell1, cell2, rSurfaceLayer, sumSurfaceLayer, k)
-#else
-        !$omp parallel
-        !$omp do schedule(runtime) private(cell1, cell2, sumSurfaceLayer, k, rSurfaceLayer)
-#endif
-        do iEdge=1,nEdges
-          normalVelocitySurfaceLayer(iEdge) = 0.0_RKIND
-          cell1=cellsOnEdge(1,iEdge)
-          cell2=cellsOnEdge(2,iEdge)
-          sumSurfaceLayer=0.0_RKIND
-          rSurfaceLayer = min(minLevelEdgeBot(iEdge), maxLevelEdgeTop(iEdge))
-#ifdef MPAS_OPENACC
-          !$acc loop seq
-#endif
-          do k = minLevelEdgeBot(iEdge), maxLevelEdgeTop(iEdge)
-           rSurfaceLayer = k
-           sumSurfaceLayer = sumSurfaceLayer + layerThicknessEdgeFlux(k,iEdge)
-           if(sumSurfaceLayer.gt.surfaceLayerDepth) then
-             sumSurfaceLayer = sumSurfaceLayer - layerThicknessEdgeFlux(k,iEdge)
-             rSurfaceLayer = int(k-1) + (surfaceLayerDepth-sumSurfaceLayer)/layerThicknessEdgeFlux(k,iEdge)
-             exit
-           endif
-          end do
-          normalVelocitySurfaceLayer(iEdge) = 0.0_RKIND
-#ifdef MPAS_OPENACC
-          !$acc loop seq
-#endif
-          do k = minLevelEdgeBot(iEdge),int(rSurfaceLayer)
-            normalVelocitySurfaceLayer(iEdge) = normalVelocitySurfaceLayer(iEdge) + normalVelocity(k,iEdge) &
-                                              * layerThicknessEdgeFlux(k,iEdge)
-          end do
-          k=int(rSurfaceLayer)+1
-          if(k.le.maxLevelEdgeTop(iEdge)) then
-            normalVelocitySurfaceLayer(iEdge) = (normalVelocitySurfaceLayer(iEdge) + fraction(rSurfaceLayer) &
-                                              * normalVelocity(k,iEdge) * layerThicknessEdgeFlux(k,iEdge)) / surfaceLayerDepth
-          end if
-        enddo
-#ifndef MPAS_OPENACC
-        !$omp end do
-        !$omp end parallel
-#endif
-
-      endif
-
-      nCells = nCellsHalo( 1 )
-
-      ! compute the attenuation coefficient for surface fluxes
-#ifdef MPAS_OPENACC
-      !$acc parallel loop present(surfaceFluxAttenuationCoefficient, surfaceFluxAttenuationCoefficientRunoff)
+      !$acc parallel loop gang vector &
+      !$acc          present(nEdgesOnCell, edgesOnCell, edgeSignonCell, dcEdge, dvEdge, &
+      !$acc                  normalGMBolusVelocity, &
+      !$acc                  vertGMBolusVelocityTop, invAreaCell, minLevelCell) &
+      !$acc          private(invAreaCell1, i, iEdge, edgeSignOnCell_temp, dcEdge_temp, &
+      !$acc                  dvEdge_temp, k)
 #else
       !$omp parallel
-      !$omp do schedule(runtime)
+      !$omp do schedule(runtime) &
+      !$omp private(i, iEdge, invAreaCell1, edgeSignOnCell_temp, dcEdge_temp, dvEdge_temp, &
+      !$omp         k, div_huGMBolus)
 #endif
       do iCell = 1, nCells
-         surfaceFluxAttenuationCoefficient(iCell) = varinp_flux_attenuation_coefficient
-         surfaceFluxAttenuationCoefficientRunoff(iCell) = varinp_flux_attenuation_coefficient_runoff
+         div_huGMBolus(:) = 0.0_RKIND
+         invAreaCell1 = invAreaCell(iCell)
+         do i = 1, nEdgesOnCell(iCell)
+            iEdge = edgesOnCell(i, iCell)
+            edgeSignOnCell_temp = edgeSignOnCell(i, iCell)
+            dcEdge_temp = dcEdge(iEdge)
+            dvEdge_temp = dvEdge(iEdge)
+            do k = minLevelCell(iCell), maxLevelCell(iCell)
+               ! Compute vertical velocity from the horizontal GM Bolus velocity
+               div_huGMBolus(k) = div_huGMBolus(k) &
+                                  - layerThickEdgeFlux(k, iEdge) * edgeSignOnCell_temp * dvEdge_temp &
+                                  * normalGMBolusVelocity(k, iEdge) * invAreaCell1
+            end do
+         end do
+         ! Vertical velocity at bottom (maxLevelCell(iCell)+1) is zero, initialized above.
+         vertGMBolusVelocityTop(1:minLevelCell(iCell)-1, iCell) = 0.0_RKIND
+         vertGMBolusVelocityTop(maxLevelCell(iCell)+1, iCell) = 0.0_RKIND
+         do k = maxLevelCell(iCell), 1, -1
+            vertGMBolusVelocityTop(k,iCell) = vertGMBolusVelocityTop(k+1,iCell) - div_huGMBolus(k)
+         end do
       end do
 #ifndef MPAS_OPENACC
       !$omp end do
       !$omp end parallel
 #endif
+      deallocate(div_huGMBolus)
 
-   end subroutine ocn_diagnostic_solve_surfaceLayer!}}}
+   end subroutine ocn_diagnostic_solve_GMvel!}}}
+
+!***********************************************************************
+!
+!  routine ocn_diagnostic_solve_MLEvel
+!
+!> \brief   Computes vertical velocity from MLE bolus velocity
+!> \author  Luke Van Roekel
+!> \date    August 2022
+!> \details
+!>  This routine computes the diagnostic vertical velocity from 
+!>    the normal velocity due to MLE (submesoscale eddy) bolus velocity
+!
+!-----------------------------------------------------------------------
+   subroutine ocn_diagnostic_solve_MLEvel(layerThickEdgeFlux, normalMLEVelocity, &
+                                         vertMLEBolusVelocityTop)!{{{
+      !-----------------------------------------------------------------
+      !
+      ! input variables
+      !
+      !-----------------------------------------------------------------
+
+      real (kind=RKIND), dimension(:,:), intent(in) :: &
+         layerThickEdgeFlux,     &
+         normalMLEVelocity
+
+      !-----------------------------------------------------------------
+      !
+      ! output variables
+      !
+      !-----------------------------------------------------------------
+
+      real (kind=RKIND), dimension(:,:), intent(out) :: &
+         vertMLEBolusVelocityTop
+
+      !-----------------------------------------------------------------
+      !
+      ! local variables
+      !
+      !-----------------------------------------------------------------
+
+      integer :: nCells, nEdges
+      integer :: iCell, iVertex, iEdge
+      integer :: i, j, k
+      integer :: edgeSignOnCell_temp, eoe
+      real(kind=RKIND) :: invAreaCell1
+      real(kind=RKIND) :: dcEdge_temp, dvEdge_temp, r_tmp, weightsOnEdge_temp
+
+      real (kind=RKIND), dimension(:), allocatable:: div_huMLEBolus
+
+#ifdef MPAS_OPENACC
+      !$acc declare device_resident(div_huMLEBolus)
+#endif
+
+      nCells = nCellsOwned
+      if (.not. config_submesoscale_enable) return
+
+      allocate(div_huMLEBolus(nVertLevels))
+#ifdef MPAS_OPENACC
+      !$acc parallel loop gang vector &
+      !$acc          present(nEdgesOnCell, edgesOnCell, edgeSignonCell, dcEdge, dvEdge, &
+      !$acc                  areaCell, normalMLEVelocity, &
+      !$acc                  vertMLEBolusVelocityTop, invAreaCell, minLevelCell) &
+      !$acc          private(invAreaCell1, i, iEdge, edgeSignOnCell_temp, dcEdge_temp, &
+      !$acc                  dvEdge_temp, k)
+#else
+      !$omp parallel
+      !$omp do schedule(runtime) &
+      !$omp private(i, iEdge, invAreaCell1, edgeSignOnCell_temp, dcEdge_temp, dvEdge_temp, &
+      !$omp         k, div_huMLEBolus)
+#endif
+      do iCell = 1, nCells
+         div_huMLEBolus(:) = 0.0_RKIND
+         invAreaCell1 = invAreaCell(iCell)
+         do i = 1, nEdgesOnCell(iCell)
+            iEdge = edgesOnCell(i, iCell)
+            edgeSignOnCell_temp = edgeSignOnCell(i, iCell)
+            dcEdge_temp = dcEdge(iEdge)
+            dvEdge_temp = dvEdge(iEdge)
+            do k = minLevelCell(iCell), maxLevelCell(iCell)
+               ! Compute vertical velocity from the horizontal MLE (submesoscale eddy)  Bolus velocity
+               div_huMLEBolus(k) = div_huMLEBolus(k) &
+                                   - layerThickEdgeFlux(k, iEdge) * edgeSignOnCell_temp * dvEdge_temp &
+                                   * normalMLEVelocity(k, iEdge) * invAreaCell1
+            end do
+         end do
+         ! Vertical velocity at bottom (maxLevelCell(iCell)+1) is zero, initialized above.
+         vertMLEBolusVelocityTop(1:minLevelCell(iCell)-1, iCell) = 0.0_RKIND
+         vertMLEBolusVelocityTop(maxLevelCell(iCell)+1, iCell) = 0.0_RKIND
+         do k = maxLevelCell(iCell), 1, -1
+            vertMLEBolusVelocityTop(k,iCell) = vertMLEBolusVelocityTop(k+1,iCell) - div_huMLEBolus(k)
+         end do
+      end do
+#ifndef MPAS_OPENACC
+      !$omp end do
+      !$omp end parallel
+#endif
+      deallocate(div_huMLEBolus)
+
+   end subroutine ocn_diagnostic_solve_MLEvel!}}}
 
 !***********************************************************************
 !
@@ -1471,9 +1815,8 @@ contains
 !-----------------------------------------------------------------------
    subroutine ocn_diagnostic_solve_vortVel(relativeVorticity, &
                 layerThicknessEdgeFlux, normalVelocity, normalTransportVelocity, &
-                normalGMBolusVelocity, vertVelocityTop, vertTransportVelocityTop, &
-                vertGMBolusVelocityTop, relativeVorticityCell, divergence, &
-                kineticEnergyCell, tangentialVelocity)!{{{
+                vertVelocityTop, vertTransportVelocityTop, relativeVorticityCell, &
+                divergence, kineticEnergyCell, tangentialVelocity)!{{{
 
       implicit none
 
@@ -1491,8 +1834,6 @@ contains
          normalVelocity
       real (kind=RKIND), dimension(:,:), intent(in) :: &
          normalTransportVelocity
-      real (kind=RKIND), dimension(:,:), intent(in) :: &
-         normalGMBolusVelocity
 
       !-----------------------------------------------------------------
       !
@@ -1504,8 +1845,6 @@ contains
          vertVelocityTop
       real (kind=RKIND), dimension(:,:), intent(out) :: &
          vertTransportVelocityTop
-      real (kind=RKIND), dimension(:,:), intent(out) :: &
-         vertGMBolusVelocityTop
       real (kind=RKIND), dimension(:,:), intent(out) :: &
          relativeVorticityCell
       real (kind=RKIND), dimension(:,:), intent(out) :: &
@@ -1527,10 +1866,13 @@ contains
       integer :: edgeSignOnCell_temp, eoe
       real(kind=RKIND) :: invAreaCell1
       real(kind=RKIND) :: dcEdge_temp, dvEdge_temp, r_tmp, weightsOnEdge_temp
+      real(kind=RKIND) :: areaEdgeMask
+      real(kind=RKIND) :: areaCellMask(nVertLevels)
 
-      real (kind=RKIND), dimension(:), allocatable:: div_hu,div_huTransport,div_huGMBolus
+      real (kind=RKIND), dimension(:), allocatable:: div_hu,div_huTransport
+
 #ifdef MPAS_OPENACC
-      !$acc declare device_resident(div_hu, div_huTransport, div_huGMBolus)
+      !$acc declare device_resident(div_hu, div_huTransport)
 #endif
 
       ! Need owned cells for relativeVorticityCell
@@ -1571,30 +1913,29 @@ contains
       !
       ! Compute divergence, kinetic energy, and vertical velocity
       !
-      allocate(div_hu(nVertLevels),div_huTransport(nVertLevels),div_huGMBolus(nVertLevels))
+      allocate(div_hu(nVertLevels),div_huTransport(nVertLevels))
 
 #ifdef MPAS_OPENACC
       !$acc parallel loop gang vector &
       !$acc          present(divergence, kineticEnergyCell, &
       !$acc                  areaCell, nEdgesOnCell, edgesOnCell, edgeSignOnCell, dcEdge, dvEdge, &
       !$acc                  maxLevelCell, normalVelocity, divergence, layerThicknessEdgeFlux, &
-      !$acc                  normalTransportVelocity, normalGMBolusVelocity, vertVelocityTop, &
-      !$acc                  vertTransportVelocityTop, vertGMBolusVelocityTop, invAreaCell, &
-      !$acc                  minLevelCell) &
+      !$acc                  normalTransportVelocity, vertVelocityTop, vertTransportVelocityTop, &
+      !$acc                  invAreaCell, minLevelCell) &
       !$acc          private(invAreaCell1, i, iEdge, edgeSignOnCell_temp, dcEdge_temp, &
       !$acc                  dvEdge_temp, k, r_tmp)
 #else
       !$omp parallel
       !$omp do schedule(runtime) &
       !$omp private(i, iEdge, invAreaCell1, edgeSignOnCell_temp, dcEdge_temp, dvEdge_temp, &
-      !$omp         k, r_tmp, div_hu, div_huTransport, div_huGMBolus)
+      !$omp         k, r_tmp, div_hu, div_huTransport)
 #endif
       do iCell = 1, nCells
          divergence(:, iCell) = 0.0_RKIND
          kineticEnergyCell(:, iCell) = 0.0_RKIND
          div_hu(:) = 0.0_RKIND
          div_huTransport(:) = 0.0_RKIND
-         div_huGMBolus(:) = 0.0_RKIND
+         areaCellMask(:) = 0.0_RKIND
          invAreaCell1 = invAreaCell(iCell)
          do i = 1, nEdgesOnCell(iCell)
             iEdge = edgesOnCell(i, iCell)
@@ -1604,19 +1945,25 @@ contains
             do k = minLevelCell(iCell), maxLevelCell(iCell)
                r_tmp = dvEdge_temp * normalVelocity(k, iEdge) * invAreaCell1
 
+               ! Remap only over unmasked edges
+               areaEdgeMask = 0.25_RKIND * dvEdge_temp * dcEdge_temp * edgeMask(k, iEdge)
+               areaCellMask(k) = areaCellMask(k) + areaEdgeMask
+
+               kineticEnergyCell(k, iCell) = kineticEnergyCell(k, iCell) &
+                                             + areaEdgeMask * normalVelocity(k, iEdge) ** 2
+
                divergence(k, iCell) = divergence(k, iCell) - edgeSignOnCell_temp * r_tmp
                div_hu(k) = div_hu(k) - layerThicknessEdgeFlux(k, iEdge) * edgeSignOnCell_temp * r_tmp
-               kineticEnergyCell(k, iCell) = kineticEnergyCell(k, iCell) &
-                                              + 0.25 * r_tmp * dcEdge_temp * normalVelocity(k,iEdge)
+               
                ! Compute vertical velocity from the horizontal total transport
                div_huTransport(k) = div_huTransport(k) &
                                     - layerThicknessEdgeFlux(k, iEdge) * edgeSignOnCell_temp &
                                     * dvEdge_temp * normalTransportVelocity(k, iEdge) * invAreaCell1
-               ! Compute vertical velocity from the horizontal GM Bolus velocity
-               div_huGMBolus(k) = div_huGMBolus(k) &
-                                  - layerThicknessEdgeFlux(k, iEdge) * edgeSignOnCell_temp * dvEdge_temp &
-                                  * normalGMBolusVelocity(k, iEdge) * invAreaCell1
             end do
+         end do
+         ! Normalise K by the masked cell area
+         do k = minLevelCell(iCell), maxLevelCell(iCell)
+            kineticEnergyCell(k, iCell) = kineticEnergyCell(k, iCell) / areaCellMask(k)
          end do
          ! Vertical velocity at bottom (maxLevelCell(iCell)+1) is zero, initialized above.
          vertVelocityTop(1:minLevelCell(iCell)-1, iCell) = 0.0_RKIND
@@ -1624,7 +1971,6 @@ contains
          do k = maxLevelCell(iCell), 1, -1
             vertVelocityTop(k,iCell) = vertVelocityTop(k+1,iCell) - div_hu(k)
             vertTransportVelocityTop(k,iCell) = vertTransportVelocityTop(k+1,iCell) - div_huTransport(k)
-            vertGMBolusVelocityTop(k,iCell) = vertGMBolusVelocityTop(k+1,iCell) - div_huGMBolus(k)
          end do
       end do
 #ifndef MPAS_OPENACC
@@ -1632,7 +1978,7 @@ contains
       !$omp end parallel
 #endif
 
-      deallocate(div_hu,div_huTransport,div_huGMBolus)
+      deallocate(div_hu,div_huTransport)
 
       nEdges = nEdgesHalo( 2 )
 #ifdef MPAS_OPENACC
@@ -1652,7 +1998,7 @@ contains
             weightsOnEdge_temp = weightsOnEdge(i, iEdge)
             do k = minLevelEdgeBot(iEdge), maxLevelEdgeTop(iEdge)
                tangentialVelocity(k,iEdge) = tangentialVelocity(k,iEdge) &
-                  + edgeMask(k, eoe) * weightsOnEdge_temp * normalVelocity(k, eoe)
+                                              + weightsOnEdge_temp * normalVelocity(k, eoe)
             end do
          end do
       end do
@@ -1665,17 +2011,20 @@ contains
 
 !***********************************************************************
 !
-!  routine ocn_diagnostic_solve_surface_pressure
+!  routine ocn_diagnostic_solve_vertVel_remap
 !
-!> \brief   Computes diagnostic variables for surface pressure
-!> \author  Xylar Asay-Davis
-!> \date    Jan 2021
+!> \brief   Computes diagnostic variables for velocity
+!> \author  Carolyn Begeman
+!> \date    October 2021
 !> \details
-!>  This routine computes the diagnostic variable for surface pressure
+!>  This routine computes the Eulerian vertical velocity valid for
+!>    Vertical Lagrangian Remapping
 !
 !-----------------------------------------------------------------------
-   subroutine ocn_diagnostic_solve_surface_pressure(forcingPool, atmosphericPressure, &
-                seaIcePressure, surfacePressure)!{{{
+   subroutine ocn_diagnostic_solve_vertVel_remap(layerThickness, &
+             layerThicknessLag, dt, vertVelocityTop)!{{{
+
+      use ocn_mesh
 
       implicit none
 
@@ -1685,11 +2034,11 @@ contains
       !
       !-----------------------------------------------------------------
 
-      type (mpas_pool_type), intent(in) :: forcingPool !< Input: Forcing information
-      real (kind=RKIND), dimension(:), intent(in) :: &
-         atmosphericPressure
-      real (kind=RKIND), dimension(:), intent(in) :: &
-         seaIcePressure
+      real (kind=RKIND), dimension(:,:), intent(in) :: &
+         layerThickness    ! layerThickness after remapping at timeLevelIn
+      real (kind=RKIND), dimension(:,:), intent(in) :: &
+         layerThicknessLag ! layerThickness before remapping at timeLevelIn
+      real (kind=RKIND), intent(in) :: dt
 
       !-----------------------------------------------------------------
       !
@@ -1697,8 +2046,8 @@ contains
       !
       !-----------------------------------------------------------------
 
-      real (kind=RKIND), dimension(:), intent(out) :: &
-         surfacePressure
+      real (kind=RKIND), dimension(:,:), intent(inout) :: &
+         vertVelocityTop
 
       !-----------------------------------------------------------------
       !
@@ -1706,43 +2055,161 @@ contains
       !
       !-----------------------------------------------------------------
 
-      integer :: nCells
-      integer :: iCell
+      integer :: iCell, k
+      real (kind=RKIND), dimension(:), allocatable :: &
+         heightCell, heightCellLag
+
+      allocate(heightCell(nVertLevels+1))
+      allocate(heightCellLag(nVertLevels+1))
+
+      !$omp parallel
+      !$omp do schedule(runtime) private(k, heightCell, heightCellLag)
+      do iCell = 1, nCellsAll
+
+         heightCell(:) = -1.0_RKIND * bottomDepth(iCell)
+         heightCellLag(:) = -1.0_RKIND * bottomDepth(iCell)
+
+         do k = maxLevelCell(iCell), minLevelCell(iCell), -1
+            ! reconstruct heights
+            heightCellLag(k) = heightCellLag(k + 1) + layerThicknessLag(k, iCell)
+            heightCell(k) = heightCell(k + 1) + layerThickness(k, iCell)
+         end do
+
+         vertVelocityTop(:, iCell) = 0.0_RKIND
+
+         do k = minLevelCell(iCell), maxLevelCell(iCell)
+            ! compute vertical velocity at the top of each Cell
+            vertVelocityTop(k,iCell) = (heightCellLag(k) - heightCell(k))/dt
+         end do
+      end do
+      !$omp end do
+      !$omp end parallel
+
+      deallocate(heightCell)
+      deallocate(heightCellLag)
+
+   end subroutine ocn_diagnostic_solve_vertVel_remap!}}}
+
+!***********************************************************************
+!
+!  routine ocn_diagnostic_solve_surface_pressure
+!
+!> \brief   Computes diagnostic variables for surface pressure
+!> \author  Xylar Asay-Davis
+!> \date    Jan 2021
+!> \details
+!>  This routine computes the diagnostic variable for surface pressure
+!>  It must be called in the code after computing the density.
+!
+!-----------------------------------------------------------------------
+
+   subroutine ocn_diagnostic_solve_surface_pressure(forcingPool, &
+               atmosphericPressure, seaIcePressure, surfacePressure)!{{{
+
+      !-----------------------------------------------------------------
+      ! input variables
+      !-----------------------------------------------------------------
+
+      type (mpas_pool_type), intent(in) :: &
+         forcingPool         !< [in] Forcing information
+
+      real (kind=RKIND), dimension(:), intent(in) :: &
+         atmosphericPressure, &!< [in] atmospheric pressure on surface
+         seaIcePressure        !< [in] sea-ice pressure on surface
+
+      !-----------------------------------------------------------------
+      ! output variables
+      !-----------------------------------------------------------------
+
+      real (kind=RKIND), dimension(:), intent(out) :: &
+         surfacePressure       !< [out] total surface pressure
+
+      !-----------------------------------------------------------------
+      ! local variables
+      !-----------------------------------------------------------------
+
+      integer :: iCell ! cell loop index
 
       real (kind=RKIND), dimension(:), pointer :: &
-        frazilSurfacePressure, landIcePressure
+         frazilSurfacePressure, &! frazil ice pressure from forcing
+         landIcePressure         ! land ice pressure
 
-      !
+      ! End preamble
+      !-----------------------------------------------------------------
+      ! Begin code
+
       ! Pressure
-      ! This section must be placed in the code after computing the density.
       !
-      call mpas_pool_get_array(forcingPool, 'frazilSurfacePressure', frazilSurfacePressure)
-      call mpas_pool_get_array(forcingPool, 'landIcePressure', landIcePressure)
+      call mpas_pool_get_array(forcingPool, 'frazilSurfacePressure', &
+                                             frazilSurfacePressure)
+      call mpas_pool_get_array(forcingPool, 'landIcePressure', &
+                                             landIcePressure)
 
-      nCells = nCellsAll
+      ! Compute pressure for generalized coordinates.
+      ! Pressure at top surface may be due to atmospheric pressure,
+      ! sea ice, frazil ice or the weight of an ice shelf
+      ! The latter two are only available when those options are on.
 
 #ifdef MPAS_OPENACC
-      !$acc parallel loop present(surfacePressure, atmosphericPressure, &
-      !$acc                       seaIcePressure, frazilSurfacePressure, &
-      !$acc                       landIcePressure)
+      !$acc parallel loop &
+      !$acc    present(surfacePressure, atmosphericPressure, &
+      !$acc            seaIcePressure)
 #else
       !$omp parallel
       !$omp do schedule(runtime)
 #endif
-      do iCell = 1, nCells
-         ! Pressure for generalized coordinates.
-         ! Pressure at top surface may be due to atmospheric pressure, frazil
-         ! ice, sea ice or the weight of an ice shelf
-         surfacePressure(iCell) = atmosphericPressure(iCell) + seaIcePressure(iCell)
-         if ( associated(frazilSurfacePressure) ) &
-            surfacePressure(iCell) = surfacePressure(iCell) + frazilSurfacePressure(iCell)
-         if ( associated(landIcePressure) ) &
-            surfacePressure(iCell) = surfacePressure(iCell) + landIcePressure(iCell)
+      do iCell = 1, nCellsAll
+
+         surfacePressure(iCell) = atmosphericPressure(iCell) &
+                                + seaIcePressure(iCell)
       end do
 #ifndef MPAS_OPENACC
       !$omp end do
+#endif
+
+      ! Add frazil component if needed
+      if ( associated(frazilSurfacePressure) ) then
+
+#ifdef MPAS_OPENACC
+         !$acc parallel loop &
+         !$acc    present(surfacePressure, frazilSurfacePressure)
+#else
+         !$omp do schedule(runtime)
+#endif
+         do iCell = 1, nCellsAll
+            surfacePressure(iCell) = surfacePressure(iCell) &
+                                   + frazilSurfacePressure(iCell)
+         end do
+#ifndef MPAS_OPENACC
+         !$omp end do
+#endif
+      endif ! frazil pressure
+
+      ! Add land ice pressure if needed
+
+      if (landIcePressureOn) then
+#ifdef MPAS_OPENACC
+         !$acc parallel loop &
+         !$acc    present(surfacePressure)
+         !! need this eventually, but there is currently
+         !! an issue, probably with the re-retrieval of pointer
+         !!acc    present(surfacePressure, landIcePressure)
+#else
+         !$omp do schedule(runtime)
+#endif
+         do iCell = 1, nCellsAll
+            surfacePressure(iCell) = surfacePressure(iCell) &
+                                   + landIcePressure(iCell)
+         end do
+#ifndef MPAS_OPENACC
+         !$omp end do
+#endif
+      endif ! land ice pressure
+#ifndef MPAS_OPENACC
       !$omp end parallel
 #endif
+
+   !--------------------------------------------------------------------
 
    end subroutine ocn_diagnostic_solve_surface_pressure!}}}
 
@@ -2034,7 +2501,11 @@ contains
 
       if (landIcePressureOn) then
 #ifdef MPAS_OPENACC
-         !$acc parallel loop present(pressureAdjustedSSH, landIceDraft)
+         !! This first directive should be correct, but there may
+         !! be a problem with the optional argument. Removing optional
+         !! landIceDraft from the present list for now.
+         !!acc parallel loop present(pressureAdjustedSSH, landIceDraft)
+         !$acc parallel loop present(pressureAdjustedSSH)
 #else
          !$omp parallel
          !$omp do schedule(runtime)
@@ -2154,7 +2625,8 @@ contains
 
       err = 0
 
-      if (config_vert_coord_movement.eq.'impermeable_interfaces') then
+      if (config_vert_coord_movement == 'impermeable_interfaces' .or. &
+          configVertAdvMethod == vertAdvRemap) then
         vertAleTransportTop=0.0_RKIND
         !$acc update device(vertAleTransportTop)
         return
@@ -2704,7 +3176,7 @@ contains
          velocityMagnitude = sqrt(kineticEnergyCell(minLevelCell(cell1),cell1) + kineticEnergyCell(minLevelCell(cell2),cell2))
          landIceEdgeFraction = 0.5_RKIND*(landIceFraction(cell1)+landIceFraction(cell2))
 
-         topDrag(iEdge) = - rho_sw * landIceEdgeFraction * varinp_land_ice_flux_topDragCoeff &
+         topDrag(iEdge) = - rho_sw * landIceEdgeFraction * config_land_ice_flux_topDragCoeff &
                           * velocityMagnitude * normalVelocity(minLevelEdgeBot(iEdge),iEdge)
 
       end do
@@ -2722,13 +3194,13 @@ contains
       do iCell = 1, nCellsAll
          ! the magnitude of the top drag is CD*u**2 = CD*(2*KE)
          topDragMag(iCell) = rho_sw * landIceFraction(iCell) &
-                           * 2.0_RKIND * varinp_land_ice_flux_topDragCoeff *  kineticEnergyCell(minLevelCell(iCell),iCell)
+                           * 2.0_RKIND * config_land_ice_flux_topDragCoeff *  kineticEnergyCell(minLevelCell(iCell),iCell)
 
          ! the friction velocity is the square root of the top drag + variance of tidal velocity
          ! (computed regardless of land-ice coverage)
-         landIceFrictionVelocity(iCell) = sqrt(varinp_land_ice_flux_topDragCoeff * &
+         landIceFrictionVelocity(iCell) = sqrt(config_land_ice_flux_topDragCoeff * &
                                    (2.0_RKIND * kineticEnergyCell(minLevelCell(iCell),iCell) &
-                                   + varinp_land_ice_flux_rms_tidal_velocity**2))
+                                   + config_land_ice_flux_rms_tidal_velocity**2))
       end do
 #ifndef MPAS_OPENACC
       !$omp end do
@@ -2745,7 +3217,7 @@ contains
          blTempScratch(iCell) = 0.0_RKIND
          blSaltScratch(iCell) = 0.0_RKIND
          do iLevel = minLevelCell(iCell), maxLevelCell(iCell)
-            dz = min(layerThickness(iLevel,iCell),varinp_land_ice_flux_boundaryLayerThickness-blThickness)
+            dz = min(layerThickness(iLevel,iCell),config_land_ice_flux_boundaryLayerThickness-blThickness)
             if(dz <= 0.0_RKIND) exit
             blTempScratch(iCell) = blTempScratch(iCell) + activeTracers(indexTval, iLevel, iCell)*dz
             blSaltScratch(iCell) = blSaltScratch(iCell) + activeTracers(indexSval, iLevel, iCell)*dz
@@ -2769,16 +3241,16 @@ contains
       do iCell = 1, nCellsAll
          landIceBoundaryLayerTracers(indexBLTval, iCell) = blTempScratch(iCell)
          landIceBoundaryLayerTracers(indexBLSval, iCell) = blSaltScratch(iCell)
-         if(varinp_land_ice_flux_boundaryLayerNeighborWeight > 0.0_RKIND) then
+         if(config_land_ice_flux_boundaryLayerNeighborWeight > 0.0_RKIND) then
             weightSum = 1.0_RKIND
             do i = 1, nEdgesOnCell(iCell)
                cell2 = cellsOnCell(i,iCell)
 
                landIceBoundaryLayerTracers(indexBLTval, iCell) = landIceBoundaryLayerTracers(indexBLTval, iCell) &
-                 + cellMask(minLevelCell(cell2),cell2)*varinp_land_ice_flux_boundaryLayerNeighborWeight*blTempScratch(cell2)
+                 + cellMask(minLevelCell(cell2),cell2)*config_land_ice_flux_boundaryLayerNeighborWeight*blTempScratch(cell2)
                landIceBoundaryLayerTracers(indexBLSval, iCell) = landIceBoundaryLayerTracers(indexBLSval, iCell) &
-                 + cellMask(minLevelCell(cell2),cell2)*varinp_land_ice_flux_boundaryLayerNeighborWeight*blSaltScratch(cell2)
-               weightSum = weightSum + cellMask(minLevelCell(cell2),cell2)*varinp_land_ice_flux_boundaryLayerNeighborWeight
+                 + cellMask(minLevelCell(cell2),cell2)*config_land_ice_flux_boundaryLayerNeighborWeight*blSaltScratch(cell2)
+               weightSum = weightSum + cellMask(minLevelCell(cell2),cell2)*config_land_ice_flux_boundaryLayerNeighborWeight
             end do
             landIceBoundaryLayerTracers(:, iCell) = landIceBoundaryLayerTracers(:, iCell)/weightSum
          end if
@@ -2798,9 +3270,9 @@ contains
          do iCell = 1, nCellsAll
             ! transfer coefficients from namelist
             landIceTracerTransferVelocities(indexHeatTransval, iCell) = landIceFrictionVelocity(iCell) &
-                                             * varinp_land_ice_flux_jenkins_heat_transfer_coefficient
+                                             * config_land_ice_flux_jenkins_heat_transfer_coefficient
             landIceTracerTransferVelocities(indexSaltTransval, iCell) = landIceFrictionVelocity(iCell) &
-                                             * varinp_land_ice_flux_jenkins_salt_transfer_coefficient
+                                             * config_land_ice_flux_jenkins_salt_transfer_coefficient
          end do
 #ifndef MPAS_OPENACC
          !$omp end do
@@ -2849,7 +3321,7 @@ contains
 #endif
       do iCell = 1, nCellsAll
          if(landIceMask(iCell) == 1) then
-            sfcFlxAttCoeff(iCell) = varinp_land_ice_flux_attenuation_coefficient
+            sfcFlxAttCoeff(iCell) = config_land_ice_flux_attenuation_coefficient
          end if
       end do
 #ifndef MPAS_OPENACC
@@ -2865,7 +3337,7 @@ contains
 
 !***********************************************************************
 !
-!  routine ocn_reconstruct_gm_vectors
+!  routine ocn_reconstruct_eddy_vectors
 !
 !> \brief   Computes cell-centered vector diagnostics
 !> \author  Mark Petersen
@@ -2875,11 +3347,11 @@ contains
 !
 !-----------------------------------------------------------------------
 
-   subroutine ocn_reconstruct_gm_vectors(meshPool) !{{{
+   subroutine ocn_reconstruct_eddy_vectors(meshPool) !{{{
 
       type (mpas_pool_type), intent(in) :: meshPool !< Input: mesh information
 
-      call mpas_timer_start('reconstruct gm vecs')
+      call mpas_timer_start('reconstruct eddy vecs')
 
       call mpas_reconstruct(meshPool, normalTransportVelocity,          &
                        transportVelocityX,            &
@@ -2889,25 +3361,38 @@ contains
                        transportVelocityMeridional    &
                       )
 
-      call mpas_reconstruct(meshPool, normalGMBolusVelocity,          &
-                       GMBolusVelocityX,            &
-                       GMBolusVelocityY,            &
-                       GMBolusVelocityZ,            &
+      if(config_use_gm) then 
+         call mpas_reconstruct(meshPool, normalGMBolusVelocity,          &
+                       eddyVelocityX,            &
+                       eddyVelocityY,            &
+                       eddyVelocityZ,            &
                        GMBolusVelocityZonal,        &
                        GMBolusVelocityMeridional    &
                       )
 
-      call mpas_reconstruct(meshPool, gmStreamFuncTopOfEdge,          &
+         call mpas_reconstruct(meshPool, gmStreamFuncTopOfEdge,          &
                       GMStreamFuncX,            &
                       GMStreamFuncY,            &
                       GMStreamFuncZ,            &
                       GMStreamFuncZonal,        &
                       GMStreamFuncMeridional    &
                      )
+      end if
 
-      call mpas_timer_stop('reconstruct gm vecs')
+      if (config_submesoscale_enable) then
+         call mpas_reconstruct(meshPool, normalMLEvelocity,          &
+                       eddyVelocityX,            &
+                       eddyVelocityY,            &
+                       eddyVelocityZ,            &
+                       mleVelocityZonal,        &
+                       mleVelocityMeridional    &
+                      )
 
-   end subroutine ocn_reconstruct_gm_vectors!}}}
+      end if
+
+      call mpas_timer_stop('reconstruct eddy vecs')
+
+   end subroutine ocn_reconstruct_eddy_vectors!}}}
 
 
 !***********************************************************************
@@ -3590,7 +4075,25 @@ contains
           fCoef = 0
       end if
 
-      call ocn_diagnostics_variables_init(domain, jenkinsOn, hollandJenkinsOn, err)
+      ! Initialize choice for computing thickness at edges for fluxes
+      if (trim(config_thickness_flux_type) == 'centered') then
+         thickEdgeFluxChoice = thickEdgeFluxCenter
+      else
+         if (config_use_wetting_drying .and. &
+             (trim(config_thickness_flux_type) /= 'centered')) then
+            if ( trim(config_thickness_flux_type) == 'upwind') then
+               thickEdgeFluxChoice = thickEdgeFluxUpwind
+            end if
+         else
+            thickEdgeFluxChoice = thickEdgeFluxUnknown
+            call mpas_log_write('Thickness flux option of ' //&
+                 & trim(config_thickness_flux_type) // &
+                 & 'is not known', MPAS_LOG_CRIT)
+         end if
+      end if
+
+      call ocn_diagnostics_variables_init(domain, jenkinsOn, &
+                                          hollandJenkinsOn, err)
 
     end subroutine ocn_diagnostics_init!}}}
 
