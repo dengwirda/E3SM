@@ -444,7 +444,8 @@ contains
       call ocn_vel_hmix_tend(divergence, relativeVorticity, tendVel,err)
 
       ! Add forcing and bottom drag
-      call ocn_vel_forcing_tend(normalVelocity, sfcFlxAttCoeff, &
+      call ocn_vel_forcing_tend(normalVelocity, tangentialVelocity, &
+                                sfcFlxAttCoeff, &
                                 sfcStress, kineticEnergyCell, &
                                 layerThickEdgeDrag, &
                                 layerThickEdgeMean, tendVel, err)

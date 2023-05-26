@@ -2184,7 +2184,8 @@
 				filename_template="topographic_wave_drag.nc"
 				runtime_format="single_file"
 				mode="forward;analysis">
-			<var name="topographic_wave_drag"/>
+			<var name="topographicWaveDrag_11"/>
+			<var name="topographicWaveDrag_12"/>
 		</stream>
 
 	</streams>
@@ -3151,8 +3152,12 @@
 		<var name="surfaceFluxAttenuationCoefficientRunoff" type="real" dimensions="nCells Time" units="m"
 			description="The spatially-dependent length scale of exponential decay of river runoff. Fluxes are multiplied by $e^{z/\gamma}$, where this coefficient is $\gamma$."
 		/>
-		<var name="topographic_wave_drag" type="real" dimensions="nEdges" units="1"
-			description="wave drag coefficient or 1/(rinv) where rinv is the e-folding time used in HyCOM"
+		<var name="topographicWaveDrag_11" type="real" dimensions="nEdges" units="1"
+			description="The 11 coefficient of the topographic wave drag tensor."
+			packages="topographicWaveDragPKG"
+		/>
+		<var name="topographicWaveDrag_12" type="real" dimensions="nEdges" units="1"
+			description="The 12 coefficient of the topographic wave drag tensor."
 			packages="topographicWaveDragPKG"
 		/>
 		<!-- diagnostic fields for land-ice fluxes -->

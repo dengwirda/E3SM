@@ -66,7 +66,7 @@ contains
 !  routine ocn_vel_forcing_topographic_wave_drag_tend
 !
 !> \brief   Computes tendency term from topographic wave drag
-!> \author  Nairita Pal
+!> \author  Nairita Pal, Darren Engwirda
 !> \date    15 Oct 2020
 !> \details
 !>  This routine computes the topographic wave drag tendency for momentum
@@ -75,7 +75,7 @@ contains
 !-----------------------------------------------------------------------
 
    subroutine ocn_vel_forcing_topographic_wave_drag_tend(normalVelocity, & !{{{
-                     tend, err)
+                     tangentialVelocity, tend, err)
 
       !-----------------------------------------------------------------
       !
@@ -84,7 +84,9 @@ contains
       !-----------------------------------------------------------------
 
       real (kind=RKIND), dimension(:,:), intent(in) :: &
-         normalVelocity   !< Input: velocity
+         normalVelocity     !< Input: velocity
+      real (kind=RKIND), dimension(:,:), intent(in) :: &
+         tangentialVelocity !< Input: tangential velocity
 
       !-----------------------------------------------------------------
       !
@@ -120,12 +122,11 @@ contains
       do iEdge = 1, nEdgesOwned
         k =  maxLevelEdgeTop(iEdge)
         ! topographic wave drag term:
-        ! du/dt = ... 1/rinv * u
-        ! rinv is the e-folding time use in HyCOM. Here
-        ! topographic_wave_drag = 1/rinv
+        ! du/dt = ... -beta * (C_11 * u + C_12 * u^perp)
         if (k>0) then
-          tend(k,iEdge) = tend(k,iEdge) - topographicWaveDragCoeff &
-             * topographic_wave_drag(iEdge) * normalVelocity(k,iEdge)
+          tend(k,iEdge) = tend(k,iEdge) - topographicWaveDragCoeff * ( &
+             topographicWaveDrag_11(iEdge) * normalVelocity(k,iEdge) + &
+             topographicWaveDrag_12(iEdge) * tangentialVelocity(k,iEdge))
         endif
       enddo
       !$omp end do
