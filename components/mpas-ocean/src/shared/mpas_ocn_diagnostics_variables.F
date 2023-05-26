@@ -85,7 +85,8 @@ module ocn_diagnostics_variables
    real (kind=RKIND), dimension(:), pointer :: landIceFrictionVelocity
    real (kind=RKIND), dimension(:), pointer :: topDrag
    real (kind=RKIND), dimension(:), pointer :: topDragMag
-   real (kind=RKIND), dimension(:), pointer :: topographic_wave_drag
+   real (kind=RKIND), dimension(:), pointer :: topographicWaveDrag_11
+   real (kind=RKIND), dimension(:), pointer :: topographicWaveDrag_12
    real (kind=RKIND), dimension(:,:), pointer :: landIceBoundaryLayerTracers
    real (kind=RKIND), dimension(:,:), pointer :: landIceTracerTransferVelocities
 
@@ -252,7 +253,10 @@ contains
       call mpas_pool_get_subpool(domain % blocklist % structs, 'diagnostics', diagnosticsPool)
 
       if (config_use_topographic_wave_drag) then
-         call mpas_pool_get_array(diagnosticsPool, 'topographic_wave_drag', topographic_wave_drag)
+         call mpas_pool_get_array(diagnosticsPool, 'topographicWaveDrag_11', &
+                   topographicWaveDrag_11)
+         call mpas_pool_get_array(diagnosticsPool, 'topographicWaveDrag_12', &
+                   topographicWaveDrag_12)
       end if
 
       if ( trim(config_ocean_run_mode) == 'forward' ) then
@@ -369,8 +373,11 @@ contains
 
       if (config_use_topographic_wave_drag) then
          call mpas_pool_get_array(diagnosticsPool, &
-                  'topographic_wave_drag', &
-                   topographic_wave_drag)
+                  'topographicWaveDrag_11', &
+                   topographicWaveDrag_11)
+         call mpas_pool_get_array(diagnosticsPool, &
+                  'topographicWaveDrag_12', &
+                   topographicWaveDrag_12)
       end if
 
       if (config_use_tidal_potential_forcing) then
@@ -679,7 +686,9 @@ contains
          !$acc                   landIceFrictionVelocity)
       end if
       if (config_use_topographic_wave_drag) then
-         !$acc enter data create(topographic_wave_drag)
+         !$acc enter data create(topographicWaveDrag_11, &
+         !$acc                   topographicWaveDrag_12  &
+         !$acc                   )
       end if
       if (config_use_self_attraction_loading) then
          !$acc enter data copyin(pgf_sal)
@@ -921,7 +930,9 @@ contains
          !$acc                   landIceFrictionVelocity)
       end if
       if (config_use_topographic_wave_drag) then
-         !$acc exit data delete(topographic_wave_drag)
+         !$acc exit data delete( topographicWaveDrag_11, &
+         !$acc                   topographicWaveDrag_12  &
+         !$acc                   )
       end if
       if (config_use_self_attraction_loading) then
          !$acc exit data delete(pgf_sal)
