@@ -1338,7 +1338,6 @@ contains
          enddo
 #ifndef MPAS_OPENACC
          !$omp end do
-         !$omp end parallel
 #endif
          endif
          
@@ -1376,9 +1375,12 @@ contains
          enddo
 #ifndef MPAS_OPENACC
          !$omp end do
-         !$omp end parallel
 #endif
          endif
+
+#ifndef MPAS_OPENACC
+         !$omp end parallel
+#endif
 
          !$acc exit data delete(vorticityGradientNormalComponent, &
          !$acc                  vorticityGradientTangentialComponent)
