@@ -574,7 +574,7 @@ contains
 !  routine ocn_relativeVorticity_circulation
 !
 !> \brief   Computes relative vorticity and circulation
-!> \author  Mark Petersen, Doug Jacobsen, Todd Ringler
+!> \author  Mark Petersen, Doug Jacobsen, Todd Ringler, Darren Engwirda
 !> \date    November 2013
 !> \details
 !>  Computes relative vorticity and circulation
@@ -614,7 +614,7 @@ contains
 
       integer :: iVertex, iEdge, i, k
 
-      real (kind=RKIND) :: invAreaTri1, r_tmp
+      real (kind=RKIND) :: invAreaTri1, r_tmp, wall_slip_factor
 
       err = 0
 
@@ -634,24 +634,37 @@ contains
       !$omp end do
 #endif
 
+      ! no-slip = 0.0
+      ! free-slip = 1.0
+      ! partial-slip in-between
+      wall_slip_factor = config_wall_slip_factor
+
 #ifdef MPAS_OPENACC
       !$acc parallel loop &
-      !$acc          present(circulation, relativeVorticity, areaTriangle, edgesOnVertex, &
-      !$acc                  maxLevelVertexBot, dcEdge, normalVelocity, edgeSignOnVertex, &
-      !$acc                  minLevelVertexTop) &
-      !$acc          private(invAreaTri1, iVertex, iEdge, k, r_tmp)
+      !$acc          present(circulation, relativeVorticity, edgesOnVertex, &
+      !$acc                  boundaryVertex, edgeSignOnVertex, &
+      !$acc                  maxLevelVertexBot, dcEdge, normalVelocity, &
+      !$acc                  minLevelVertexTop, areaTriangle) &
+      !$acc          private(invAreaTri1, i, iEdge, k, r_tmp, wall_slip_factor)
 #else
-      !$omp do schedule(runtime) private(invAreaTri1, i, iEdge, k, r_tmp)
+      !$omp do schedule(runtime) &
+      !$omp          private(invAreaTri1, i, iEdge, k, r_tmp, wall_slip_factor)
 #endif
       do iVertex = 1, nVerticesAll
          invAreaTri1 = 1.0_RKIND / areaTriangle(iVertex)
-         do i = 1, vertexDegree
-            iEdge = edgesOnVertex(i, iVertex)
-            do k = minLevelVertexTop(iVertex), maxLevelVertexBot(iVertex)
-              r_tmp = dcEdge(iEdge) * normalVelocity(k, iEdge)
-              circulation(k, iVertex) = circulation(k, iVertex) + edgeSignOnVertex(i, iVertex) * r_tmp
-              relativeVorticity(k, iVertex) = relativeVorticity(k, iVertex) + edgeSignOnVertex(i, iVertex) * r_tmp * invAreaTri1
+         do k = minLevelVertexTop(iVertex), maxLevelVertexBot(iVertex)
+            do i = 1, vertexDegree
+               iEdge = edgesOnVertex(i, iVertex)
+               r_tmp = edgeSignOnVertex(i, iVertex) * &
+                       dcEdge(iEdge) * normalVelocity(k, iEdge)
+               circulation(k, iVertex) = circulation(k, iVertex) + r_tmp
             end do
+            ! no-slip: curl(u) unchanged
+            ! free-slip: curl(u) = 0.0
+            ! partial-slip: curl(u) reduced
+            circulation(k, iVertex) = circulation(k, iVertex) * &
+               (1.0_RKIND - wall_slip_factor * boundaryVertex(k, iVertex))
+            relativeVorticity(k, iVertex) = circulation(k, iVertex) * invAreaTri1
          end do
       end do
 #ifndef MPAS_OPENACC
@@ -1031,7 +1044,7 @@ contains
 !  routine ocn_diagnostic_solve_vorticity
 !
 !> \brief   Computes normalized vorticity at various locations
-!> \author  Matt Turner
+!> \author  Matt Turner, Darren Engwirda, Sara Calandrini
 !> \date    October 2020
 !> \details
 !>  This routine computes a normalized vorticity at centers, edges
@@ -1079,11 +1092,12 @@ contains
          cell1, cell2                ! neighbor cell   addresses
 
       real(kind=RKIND) :: &
-         invAreaTri1,          &! 1/triangle area
          invAreaCell1,         &! 1/cell area
+         areaDual,             &! unmaksed dual-cell overlap
          invLength,            &! 1/length
          layerThicknessVertex, &! layer thickness at vertex
-         apvm_scale_factor      ! scale factor for APVM form
+         apvm_scale_factor,    &! scale factor for APVM form
+         scal, invNormVel       ! scale factor for AUST form
 
       ! Local arrays
       ! normalizedPlanetaryVorticityVertex: earth's rotational rate
@@ -1123,25 +1137,29 @@ contains
       !$acc    present(normalizedRelativeVorticityVertex, &
       !$acc            normalizedPlanetaryVorticityVertex, &
       !$acc            relativeVorticity, fVertex, layerThickness, &
-      !$acc            areaTriangle, kiteAreasOnVertex, cellsOnVertex, &
-      !$acc            maxLevelVertexBot) &
-      !$acc    private(i, k, iCell, invAreaTri1, layerThicknessVertex)
+      !$acc            kiteAreasOnVertex, cellsOnVertex, cellMask, &
+      !$acc            minLevelVertexTop, maxLevelVertexBot) &
+      !$acc    private(i, k, iCell, areaDual, layerThicknessVertex)
 #else
       !$omp parallel
       !$omp do schedule(runtime) &
-      !$omp    private(i, k, iCell, invAreaTri1, layerThicknessVertex)
+      !$omp    private(i, k, iCell, areaDual, layerThicknessVertex)
 #endif
       do iVertex = 1, nVertices
-         invAreaTri1 = 1.0_RKIND / areaTriangle(iVertex)
-         do k = 1, maxLevelVertexBot(iVertex)
+         normalizedRelativeVorticityVertex(:,iVertex) = 0.0_RKIND
+         normalizedPlanetaryVorticityVertex(:,iVertex) = 0.0_RKIND
+         do k = minLevelVertexTop(iVertex), maxLevelVertexBot(iVertex)
             layerThicknessVertex = 0.0_RKIND
+            areaDual = 0.0_RKIND  ! only the unmasked kites
             do i = 1, vertexDegree
                iCell = cellsOnVertex(i,iVertex)
                layerThicknessVertex = layerThicknessVertex &
                                     + layerThickness(k,iCell) &
                                     * kiteAreasOnVertex(i,iVertex)
+               areaDual = areaDual + cellMask(k,iCell) &
+                                    * kiteAreasOnVertex(i,iVertex)
             end do
-            layerThicknessVertex = layerThicknessVertex*invAreaTri1
+            layerThicknessVertex = layerThicknessVertex/areaDual
             if (layerThicknessVertex == 0) cycle
 
             normalizedRelativeVorticityVertex(k,iVertex) = &
@@ -1164,7 +1182,7 @@ contains
       !$acc            normalizedPlanetaryVorticityEdge, &
       !$acc            normalizedRelativeVorticityVertex, &
       !$acc            normalizedPlanetaryVorticityVertex, &
-      !&acc            minLevelEdgeTop, maxLevelEdgeBot, &
+      !$acc            minLevelEdgeTop, maxLevelEdgeBot, &
       !$acc            verticesOnEdge) &
       !$acc    private(k, vertex1, vertex2)
 #else
@@ -1233,8 +1251,10 @@ contains
       nEdges = nEdgesAll
       apvm_scale_factor = config_apvm_scale_factor
 
-      ! Diagnostics required for the Anticipated Potential Vorticity Method (apvm).
-      if (config_apvm_scale_factor>1e-10) then
+      ! Diagnostics required for the Anticipated Potential Vorticity Method(s)
+      if (config_apvm_kind .eq. 'APVM' .or. &
+          config_apvm_kind .eq. 'AUST-constant' .or. &
+          config_apvm_kind .eq. 'AUST-adaptive') then
 
          allocate( &
             vorticityGradientNormalComponent    (nVertLevels,nEdges), &
@@ -1291,8 +1311,9 @@ contains
 #endif
 
          !
-         ! Modify PV edge with upstream bias.
+         ! Modify PV edge with APVM-style upstream bias
          !
+         if (config_apvm_kind .eq. 'APVM') then
 #ifdef MPAS_OPENACC
          !$acc parallel loop &
          !$acc    present(normalizedRelativeVorticityEdge,      &
@@ -1319,6 +1340,45 @@ contains
          !$omp end do
          !$omp end parallel
 #endif
+         endif
+         
+         !
+         ! Modify PV edge with AUST-style upstream bias
+         !
+         if (config_apvm_kind .eq. 'AUST-constant') then
+#ifdef MPAS_OPENACC
+         !$acc parallel loop &
+         !$acc    present(normalizedRelativeVorticityEdge,      &
+         !$acc            vorticityGradientNormalComponent,     &
+         !$acc            vorticityGradientTangentialComponent, &
+         !$acc            normalVelocity, tangentialVelocity,   &
+         !$acc            minLevelEdgeTop, maxLevelEdgeBot)
+#else
+         !$omp do schedule(runtime) private(k)
+#endif
+         do iEdge = 1,nEdges
+            ! could go into ocn_mesh: aust_edge_scaling
+            scal = 0.5_RKIND * sqrt(dvEdge(iEdge) * dcEdge(iEdge))
+            !$acc loop seq
+            do k = minLevelEdgeTop(iEdge), maxLevelEdgeBot(iEdge)
+               invNormVel = 1.0_RKIND / sqrt(1.0E-16_RKIND + &
+                    normalVelocity(k,iEdge)*normalVelocity(k,iEdge) + &
+                    tangentialVelocity(k,iEdge)*tangentialVelocity(k,iEdge))
+            
+               normalizedRelativeVorticityEdge(k,iEdge) = &
+               normalizedRelativeVorticityEdge(k,iEdge) - &
+                    apvm_scale_factor * scal * invNormVel * &
+                    (normalVelocity(k,iEdge)* &
+                     vorticityGradientNormalComponent(k,iEdge) &
+                   + tangentialVelocity(k,iEdge)* &
+                     vorticityGradientTangentialComponent(k,iEdge) )
+            end do
+         enddo
+#ifndef MPAS_OPENACC
+         !$omp end do
+         !$omp end parallel
+#endif
+         endif
 
          !$acc exit data delete(vorticityGradientNormalComponent, &
          !$acc                  vorticityGradientTangentialComponent)
@@ -1917,7 +1977,7 @@ contains
 !  routine ocn_diagnostic_solve_vortVel
 !
 !> \brief   Computes several velocity-related fields
-!> \author  Matt Turner
+!> \author  Matt Turner, Darren Engwirda
 !> \date    October 2020
 !> \details
 !>  This routine a number of fields related to horizontal velocity,
@@ -1968,15 +2028,20 @@ contains
          edgeSignOnCell_temp     ! local tmp for sign across edge
 
       real(kind=RKIND) :: &
-         invAreaCell1,      &! 1/cell area
-         dcEdge_temp,       &! local val of dcEdge
-         dvEdge_temp,       &! local val of dvEdge
-         r_tmp,             &! tmp for common factors
-         weightsOnEdge_temp  ! local tmp for weights on edge
+         invAreaCell1,         &! 1/cell area
+         dcEdge_temp,          &! local val of dcEdge
+         dvEdge_temp,          &! local val of dvEdge
+         r_tmp,                &! tmp for common factors
+         weightsOnEdge_temp,   &! local tmp for weights on edge
+         kineticEnergyEdgeTop, &! local K at edge top
+         kineticEnergyEdgeMid, &! local K at edge mid
+         kineticEnergyEdgeBot   ! local K at edge bot
 
       real (kind=RKIND), dimension(:), allocatable :: &
-         div_hu,         &! local divergence of thick-weighted velocity
-         div_huTransport  ! local div of thick-weighted transport vel
+         div_hu,            &! local divergence of thick-weighted velocity
+         div_huTransport,   &! local div of thick-weighted transport vel
+         normalVelocityTop, &! local interp. of u to layer interfaces
+         tangentialVelocityTop ! local interp. of u^perp to layer interfaces
 
       ! End preamble
       !-----------------------------------------------------------------
@@ -2018,14 +2083,53 @@ contains
       !$omp end parallel
 #endif
 
+      ! Compute tangential velocity
+
+      nEdges = nEdgesHalo(2)
+
+#ifdef MPAS_OPENACC
+      !$acc parallel loop gang vector &
+      !$acc    present(tangentialVelocity, normalVelocity, &
+      !$acc            weightsOnEdge, weightsOnEdgeLsqr, &
+      !$acc            nEdgesOnEdge, edgesOnEdge, edgeMask, &
+      !$acc            minLevelEdgeBot, maxLevelEdgeTop) &
+      !$acc    private(i, k, kmin, kmax, eoe, weightsOnEdge_temp)
+#else
+      !$omp parallel
+      !$omp do schedule(runtime) &
+      !$omp    private(i, k, kmin, kmax, eoe, weightsOnEdge_temp)
+#endif
+      do iEdge = 1, nEdges
+         tangentialVelocity(:,iEdge) = 0.0_RKIND
+         kmin = minLevelEdgeTop(iEdge)
+         kmax = maxLevelEdgeBot(iEdge)
+         do i = 1, nEdgesOnEdge(iEdge)
+            eoe = edgesOnEdge(i,iEdge)
+            weightsOnEdge_temp = weightsOnEdgeLsqr(i, iEdge)
+            do k = kmin,kmax
+               tangentialVelocity(k,iEdge) = &
+               tangentialVelocity(k,iEdge) + 
+                   edgeMask(k, iEdge)*weightsOnEdge_temp* &
+                                      normalVelocity(k, eoe)
+            end do
+         end do
+      end do
+#ifndef MPAS_OPENACC
+      !$omp end do
+      !$omp end parallel
+#endif
+
       ! Need 0,1,2 halo cells
       nCells = nCellsHalo(2)
 
       !
       ! Compute divergence, kinetic energy, and vertical velocity
       !
-      allocate(div_hu(nVertLevels),div_huTransport(nVertLevels))
-      !$acc enter data create(div_hu, div_huTransport)
+      allocate(div_hu(nVertLevels),div_huTransport(nVertLevels), &
+               normalVelocityTop(nVertLevels+1), &
+               tangentialVelocityTop(nVertLevels+1))
+      !$acc enter data create(div_hu, div_huTransport, &
+      !$acc                   normalVelocityTop, tangentialVelocityTop)
 
 #ifdef MPAS_OPENACC
       !$acc parallel loop gang vector &
@@ -2037,13 +2141,15 @@ contains
       !$acc            edgeSignOnCell, minLevelCell, maxLevelCell) &
       !$acc    private(div_hu, div_huTransport, i, k, kmin, kmax, & 
       !$acc            iEdge, invAreaCell1, r_tmp, dcEdge_temp, & 
-      !$acc            dvEdge_temp, edgeSignOnCell_temp)  
+      !$acc            dvEdge_temp, edgeSignOnCell_temp, &
+      !$acc            normalVelocityTop, tangentialVelocityTop)  
 #else
       !$omp parallel
       !$omp do schedule(runtime) &
       !$omp    private(div_hu, div_huTransport, i, k, kmin, kmax, & 
       !$omp            iEdge, invAreaCell1, r_tmp, dcEdge_temp, & 
-      !$omp            dvEdge_temp, edgeSignOnCell_temp)  
+      !$omp            dvEdge_temp, edgeSignOnCell_temp, &
+      !$omp            normalVelocityTop, tangentialVelocityTop)  
 #endif
       do iCell = 1, nCells
          divergence(:,iCell) = 0.0_RKIND
@@ -2071,9 +2177,45 @@ contains
                                     edgeSignOnCell_temp*dvEdge_temp* &
                                     normalTransportVelocity(k,iEdge)* &
                                     invAreaCell1
-               kineticEnergyCell(k,iCell) = kineticEnergyCell(k,iCell) &
-                                          + 0.25*r_tmp*dcEdge_temp* &
-                                            normalVelocity(k,iEdge)
+            end do
+            ! Compute kinetic energy
+            r_tmp = 0.25_RKIND * dvEdge_temp * dcEdge_temp * invAreaCell1
+            normalVelocityTop(:) = 0.0_RKIND
+            normalVelocityTop(minLevelEdgeBot(iEdge)+0) = &
+               normalVelocity(minLevelEdgeBot(iEdge)+0, iEdge)
+            normalVelocityTop(maxLevelEdgeTop(iEdge)+1) = &
+               normalVelocity(maxLevelEdgeTop(iEdge)+0, iEdge)
+            do k = minLevelEdgeBot(iEdge), maxLevelEdgeTop(iEdge)-1
+               normalVelocityTop(k+1) = &
+                  0.5_RKIND * (normalVelocity(k+0, iEdge) + &
+                               normalVelocity(k+1, iEdge) )
+            end do
+            tangentialVelocityTop(:) = 0.0_RKIND
+            tangentialVelocityTop(minLevelEdgeTop(iEdge)+0) = &
+               tangentialVelocity(minLevelEdgeTop(iEdge)+0, iEdge)
+            tangentialVelocityTop(maxLevelEdgeBot(iEdge)+1) = &
+               tangentialVelocity(maxLevelEdgeBot(iEdge)+0, iEdge)
+            do k = minLevelEdgeTop(iEdge), maxLevelEdgeBot(iEdge)-1
+               tangentialVelocityTop(k+1) = &
+                  0.5_RKIND * (tangentialVelocity(k+0, iEdge) + &
+                               tangentialVelocity(k+1, iEdge) )
+            end do
+            do k = minLevelEdgeTop(iEdge), maxLevelEdgeBot(iEdge)
+               kineticEnergyEdgeTop = 0.5_RKIND * ( &
+                  normalVelocityTop(k + 0) ** 2 + &
+                  tangentialVelocityTop(k + 0) ** 2)
+               kineticEnergyEdgeMid = 0.5_RKIND * ( &
+                  normalVelocity(k, iEdge) ** 2 + &
+                  tangentialVelocity(k, iEdge) ** 2)
+               kineticEnergyEdgeBot = 0.5_RKIND * ( &
+                  normalVelocityTop(k + 1) ** 2 + &
+                  tangentialVelocityTop(k + 1) ** 2)
+               ! Layer-wise integral
+               kineticEnergyCell(k, iCell) = &
+               kineticEnergyCell(k, iCell) + r_tmp * ( &
+                  1.0_RKIND / 6.0_RKIND * kineticEnergyEdgeTop + &
+                  4.0_RKIND / 6.0_RKIND * kineticEnergyEdgeMid + &
+                  1.0_RKIND / 6.0_RKIND * kineticEnergyEdgeBot )
             end do
          end do
          ! Vertical velocity at bottom is zero, initialized above.
@@ -2093,42 +2235,10 @@ contains
       !$omp end parallel
 #endif
 
-      !$acc exit data delete(div_hu, div_huTransport)
-      deallocate(div_hu,div_huTransport)
-
-      ! Compute tangential velocity
-
-      nEdges = nEdgesHalo(2)
-
-#ifdef MPAS_OPENACC
-      !$acc parallel loop gang vector &
-      !$acc    present(tangentialVelocity, normalVelocity, &
-      !$acc            weightsOnEdge, nEdgesOnEdge, edgesOnEdge, &
-      !$acc            minLevelEdgeBot, maxLevelEdgeTop) &
-      !$acc    private(i, k, kmin, kmax, eoe, weightsOnEdge_temp)
-#else
-      !$omp parallel
-      !$omp do schedule(runtime) &
-      !$omp    private(i, k, kmin, kmax, eoe, weightsOnEdge_temp)
-#endif
-      do iEdge = 1, nEdges
-         tangentialVelocity(:,iEdge) = 0.0_RKIND
-         kmin = minLevelEdgeBot(iEdge)
-         kmax = maxLevelEdgeTop(iEdge)
-         do i = 1, nEdgesOnEdge(iEdge)
-            eoe = edgesOnEdge(i,iEdge)
-            weightsOnEdge_temp = weightsOnEdge(i, iEdge)
-            do k = kmin,kmax
-               tangentialVelocity(k,iEdge) = &
-               tangentialVelocity(k,iEdge) + weightsOnEdge_temp* &
-                                             normalVelocity(k, eoe)
-            end do
-         end do
-      end do
-#ifndef MPAS_OPENACC
-      !$omp end do
-      !$omp end parallel
-#endif
+      !$acc exit data delete(div_hu, div_huTransport, &
+      !$acc                  normalVelocityTop, tangentialVelocityTop)
+      deallocate(div_hu,div_huTransport, &
+                 normalVelocityTop,tangentialVelocityTop)
 
    !--------------------------------------------------------------------
 

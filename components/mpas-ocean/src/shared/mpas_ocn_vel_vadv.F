@@ -64,7 +64,7 @@ contains
 !  routine ocn_vel_vadv_tend
 !
 !> \brief   Computes tendency term for vertical advection
-!> \author  Mark Petersen
+!> \author  Mark Petersen, Darren Engwirda
 !> \date    September 2011
 !> \details
 !>  This routine computes the vertical advection tendency for momentum
@@ -103,14 +103,16 @@ contains
 
       integer ::       &
          iEdge, k,     &! loop indices for edge, vertical loops
-         kmin, kmax,   &! shallowest and deepest active layer on edge
-         cell1, cell2   ! neighbor cell indices across edge
+         iCell, i,     &! loop indices for dual cells
+         kmin, kmax,   &! shallowest and deepest active layers
+         vert1, vert2  &! neighbor vertex indices on edge
 
       real (kind=RKIND) :: &
-         wAvg           ! ALE transport velocity across top edge
+         r_tmp
 
-      real (kind=RKIND), dimension(:,:), allocatable :: &
-         w_dudzTopEdge  ! w*du/dz at top of edge
+      real (kind=RKIND), dimension(:), allocatable :: &
+         dudzTop, &! du/dz at layer interface
+         wAvgTop   ! w at layer interface
 
       ! End preamble
       !-----------------------------------------------------------------
@@ -124,72 +126,75 @@ contains
       call mpas_timer_start("vel vadv")
 
 
-      allocate(w_dudzTopEdge(nVertLevels+1,nEdgesAll))
-      !$acc enter data create(w_dudzTopEdge)
+      allocate(dudzTop(nVertLevels+1),wAvgTop(nVertLevels+1))
+      !$acc enter data create(dudzTop, wAvgTop)
 
 #ifdef MPAS_OPENACC
       !$acc parallel loop &
-      !$acc    present(cellsOnEdge, minLevelEdgeBot, maxLevelEdgeTop, w_dudzTopEdge, &
+      !$acc    present(verticesOnEdge, cellsOnVertex, &
+      !$acc            minLevelEdgeBot, maxLevelEdgeTop, &
+      !$acc            minLevelCell, maxLevelCell, &
+      !$acc            kiteAreasOnVertex, areaTriangle, &
       !$acc            vertAleTransportTop, normalVelocity, &
-      !$acc            layerThickEdgeFlux) &
-      !$acc    private(cell1, cell2, k, kmin, kmax, wAvg)
+      !$acc            layerThickEdgeFlux, edgeMask) &
+      !$acc    private(vert1, vert2, k, i, iCell, kmin, kmax, r_tmp)
 #else
       !$omp parallel
       !$omp do schedule(runtime) &
-      !$omp    private(cell1, cell2, k, kmin, kmax, wAvg)
+      !$omp    private(vert1, vert2, k, i, iCell, kmin, kmax, r_tmp)
 #endif
       do iEdge = 1, nEdgesOwned
-         cell1 = cellsOnEdge(1,iEdge)
-         cell2 = cellsOnEdge(2,iEdge)
-         kmin  = minLevelEdgeBot(iEdge)
-         kmax  = maxLevelEdgeTop(iEdge)
+         kmin = minLevelEdgeBot(iEdge)
+         kmax = maxLevelEdgeTop(iEdge)
 
-         w_dudzTopEdge(kmin,iEdge) = 0.0_RKIND ! flux is zero at top
-         do k = kmin+1,kmax
-
-            ! Average w from cell center to edge
-            wAvg = 0.5_RKIND*(vertAleTransportTop(k,cell1) + &
-                              vertAleTransportTop(k,cell2))
-
-            ! compute dudz at vertical interface with first order derivative.
-            w_dudzTopEdge(k,iEdge) = wAvg* &
-                                     (normalVelocity(k-1,iEdge) - &
-                                      normalVelocity(k,  iEdge))/ &
-                         (0.5_RKIND*(layerThickEdgeFlux(k-1,iEdge) + &
-                                     layerThickEdgeFlux(k  ,iEdge)))
+         ! compute du/dz terms at edge locations
+         dudzTop(:) = 0.0_RKIND
+         do k = kmin+1, kmax
+            dudzTop(k) = (normalVelocity(k-1,iEdge) - &
+                          normalVelocity(k-0,iEdge) ) / &
+            (0.5_RKIND * (layerThickEdgeFlux(k-1,iEdge) + &
+                          layerThickEdgeFlux(k-0,iEdge)))
          end do
-         ! transport is zero at bottom
-         w_dudzTopEdge(kmax+1,iEdge) = 0.0_RKIND
+         ! not zero on edge bottom!!
+         dudzTop(kmax+1) = 1.0_RKIND * dudzTop(kmax)
+
+         ! compute sdot velocities on dual cells
+         wAvgTop(:) = 0.0_RKIND
+         vert1 = verticesOnEdge(1,iEdge)
+         vert2 = verticesOnEdge(2,iEdge)
+         do i = 1,vertexDegree
+            ! remap to edge from vertex 1
+            iCell = cellsOnVertex(i,vert1)
+            r_tmp = 0.5_RKIND * &
+               kiteAreasOnVertex(i,vert1) / areaTriangle(vert1)
+            do k = minLevelCell(iCell),maxLevelCell(iCell)
+               wAvgTop(k) = wAvgTop(k) + &
+                  r_tmp * vertAleTransportTop(k,iCell)
+            end do
+            ! remap to edge from vertex 2
+            iCell = cellsOnVertex(i,vert2)
+            r_tmp = 0.5_RKIND * &
+               kiteAreasOnVertex(i,vert2) / areaTriangle(vert2)
+            do k = minLevelCell(iCell),maxLevelCell(iCell)
+               wAvgTop(k) = wAvgTop(k) + &
+                  r_tmp * vertAleTransportTop(k,iCell)
+            end do
+         end do
+         
+         ! average w*du/dz to layer midplane
+         do k = kmin, kmax
+            tend(k,iEdge) = &
+            tend(k,iEdge) - edgeMask(k,iEdge) * ( &
+               0.50_RKIND * wAvgTop(k+0) * dudzTop(k+0) + &
+               0.50_RKIND * wAvgTop(k+1) * dudzTop(k+1) )
+         end do
       end do
 #ifndef MPAS_OPENACC
       !$omp end do
 #endif
 
-      ! Average w*du/dz from vertical interface to vertical middle of cell
-#ifdef MPAS_OPENACC
-      !$acc parallel loop &
-      !$acc    present(minLevelEdgeBot, maxLevelEdgeTop, tend, edgeMask, w_dudzTopEdge)&
-      !$acc    private(k, kmin, kmax)
-#else
-      !$omp do schedule(runtime) &
-      !$omp    private(k, kmin, kmax)
-#endif
-      do iEdge = 1, nEdgesOwned
-      kmin = minLevelEdgeBot(iEdge)
-      kmax = maxLevelEdgeTop(iEdge)
-      do k = kmin, kmax
-         tend(k,iEdge) = tend(k,iEdge) - edgeMask(k,iEdge)* &
-                         0.5_RKIND*(w_dudzTopEdge(k  ,iEdge) + &
-                                    w_dudzTopEdge(k+1,iEdge))
-      enddo
-      enddo
-#ifndef MPAS_OPENACC
-      !$omp end do
-      !$omp end parallel
-#endif
-
-      !$acc exit data delete(w_dudzTopEdge)
-      deallocate(w_dudzTopEdge)
+      !$acc exit data delete(dudzTop, wAvgTop)
+      deallocate(dudzTop,wAvgTop)
 
       call mpas_timer_stop("vel vadv")
 

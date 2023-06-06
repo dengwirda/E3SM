@@ -202,6 +202,12 @@
 					possible_values="'split_explicit', 'RK4', 'unsplit_explicit', 'split_implicit'"
 		/>
 	</nml_record>
+	<nml_record name="lateral_walls" mode="forward">
+		<nml_option name="config_wall_slip_factor" type="real" default_value="0.0"
+					description="Lateral wall slip boundary condition: no-slip=0.0, free-slip=1.0, with partial-slip lying in-between. This factor multiplies relative vorticity computed at vertices positioned on lateral boundaries."
+					possible_values="Any real number between 0.0 and 1.0"
+		/>
+	</nml_record>
 	<nml_record name="hmix" mode="forward">
 		<nml_option name="config_hmix_scaleWithMesh" type="logical" default_value=".false."
 					description="If false, del2 and del4 coefficients are constant throughout the mesh (equivalent to setting $\rho_m=1$ throughout the mesh).  If true, these coefficients scale as mesh density to the -3/4 power."
@@ -218,6 +224,10 @@
 		<nml_option name="config_hmix_ref_cell_width" type="real" default_value="30.0e3" units="m"
 					description="Reference cell width. If config_hmix_use_ref_cell_width = .true., then hmix coefficients are set to be nu_{2h} = config_mom_del2*(cellWidth / config_hmix_use_ref_cell_width) and nu_{4h} = config_mom_del4*(cellWidth / config_hmix_use_ref_cell_width)^3 where cellWidth is the effective cell width computed as 2*sqrt(areaCell/pi). See Hoch et al 2020 JAMES eq 1,2. This relation applies within a simulation, but also generally among multiple simulations, so the parameters config_mom_del2, config_mom_del4, and config_hmix_use_ref_cell_width can generally remain at their standard values, and just be adjusted for fine tuning."
 					possible_values="Any positive real number, but typically a resolution number such as 30km."
+		/>
+		<nml_option name="config_apvm_kind" type="character" default_value="none" units="unitless"
+					description="Anticipated potential vorticity (APV) method formulation."
+					possible_values="'none', 'APVM', 'AUST-constant', 'AUST-adaptive'"
 		/>
 		<nml_option name="config_apvm_scale_factor" type="real" default_value="0.0"
 					description="Anticipated potential vorticity (APV) method scale factor, $c_{apv}$. When zero, APV is off."
@@ -318,6 +328,14 @@
 		<nml_option name="config_Redi_N2_based_taper_limit_term1" type="logical" default_value=".true."
 					description="If true, the N2 limiting is applied to the horizontal diffusion term"
 					possible_values=".true. or .false."
+		/>
+		<nml_option name="config_Redi_use_quasi_monotone_limiter" type="logical" default_value=".false."
+					description="If true, fluxes are reduced to prevent tracers from violating monotonicity. Cross-term fluxes are scaled toward zero to prevent tracers from under/overshooting the min/max values in adjacent cells and layers"
+					possible_values=".true. or .false."
+		/>
+		<nml_option name="config_Redi_quasi_monotone_safety_factor" type="real" default_value="1.0"
+					description="A safety factor applied to flux scaling when monotonicity is violated. Smaller values scale fluxes toward zero more aggressively."
+					possible_values="A value between 0 and 1"
 		/>
 		<nml_option name="config_Redi_min_layers_diag_terms" type="integer" default_value="6"
 					description="Redi diagonal terms (2 and 3) are turned off from layer 1 through config_Redi_min_layers_diag_terms-1, and on from config_Redi_min_layers_diag_terms to nVertLevels. The Redi diagonal terms are not guaranteed to produce bounded tracer fields, and in practice produce growing temperatures in a few columns with fewer than 5 vertical cells. Redi is meant for isopycnal mixing in the deep ocean, so not applying Redi diagonal terms in very shallow regions is an acceptable solution."

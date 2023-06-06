@@ -149,6 +149,9 @@ module ocn_mesh
       edgeTangentVectors, &! tangent unit vector at edge
       edgeNormalVectors, &! normal  unit vector at edge
       localVerticalUnitVectors ! local unit vector iin vertical
+      
+   real(kind=RKIND), public, dimension(:, :), allocatable :: &
+      weightsOnEdgeLsqr ! least-squares weights on edge, for u^perp
 
    real(kind=RKIND), public, dimension(:, :, :), pointer :: &
       cellTangentPlane, &! two vectors defining tangent plane at cell center
@@ -500,6 +503,7 @@ contains
             boundaryVertex(nVertLevels, nVerticesAll+1), &
             edgeSignOnCell(maxEdges, nCellsAll+1), &
             edgeSignOnVertex(maxEdges, nVerticesAll+1), &
+            weightsOnEdgeLsqr(maxEdges2, nEdgesAll+1), &
             invAreaCell(nCellsAll+1))
 
       !-----------------------------------------------------------------
@@ -566,6 +570,9 @@ contains
          invAreaCell(n) = 1.0_RKIND / areaCell(n)
       end do
       invAreaCell(nCellsAll+1) = 0.0_RKIND
+      
+      ! Compute least-squares weights for more accurate u^perp
+      call ocn_weightsOnEdgeLsqr()
 
       !-----------------------------------------------------------------
       ! Copy mesh data to accelerator if needed.
@@ -653,6 +660,7 @@ contains
          !$acc                   edgeSignOnCell,           &
          !$acc                   edgeSignOnVertex,         &
          !$acc                   weightsOnEdge,            &
+         !$acc                   weightsOnEdgeLsqr,        &
          !$acc                   kiteAreasOnVertex,        &
          !$acc                   edgeTangentVectors,       &
          !$acc                   edgeNormalVectors,        &
@@ -783,6 +791,7 @@ contains
       !$acc                  edgeSignOnCell,    &
       !$acc                  edgeSignOnVertex,  &
       !$acc                  weightsOnEdge,     &
+      !$acc                  weightsOnEdgeLsqr, &
       !$acc                  kiteAreasOnVertex, &
       !$acc                  edgeTangentVectors,&
       !$acc                  edgeNormalVectors, &
@@ -887,6 +896,7 @@ contains
                   edgeSignOnCell, &
                   edgeSignOnVertex, &
                   edgeAreaFractionOfCell, &
+                  weightsOnEdgeLsqr, &
                   invAreaCell)
 
 !-------------------------------------------------------------------------------
@@ -1214,6 +1224,7 @@ contains
       !$acc               edgeSignOnCell,           &
       !$acc               edgeSignOnVertex,         &
       !$acc               weightsOnEdge,            &
+      !$acc               weightsOnEdgeLsqr,        &
       !$acc               kiteAreasOnVertex,        &
       !$acc               edgeTangentVectors,       &
       !$acc               edgeNormalVectors,        &
@@ -1767,13 +1778,16 @@ contains
       ! local variables
       !-----------------------------------------------------------------
 
-      integer :: &
-         iEdge,       &! loop index/address for edges
+      integer :: i, iIter, nEdgeAvg, &
+         iEdge, jEdge,&! loop index/address for edges
          cell1, cell2  ! cell addresses for neighbors across edge
 
       real (kind=RKIND) :: &
          cellWidth,   &! reference cell width for scaling
          avgDensity    ! avg mesh density across edge
+
+      real (kind=RKIND), dimension(:), allocatable :: &
+         initScalingDel2, initScalingDel4
 
       ! End preamble
       !-------------
@@ -1785,6 +1799,10 @@ contains
             ! reference widht config_hmix_ref_cell_width
             ! See description of config_hmix_ref_cell_width in
             ! Registry.xml for more detail.
+
+            allocate(initScalingDel2(nEdgesAll+1), &
+                     initScalingDel4(nEdgesAll+1))
+
             do iEdge = 1, nEdgesAll
                cell1 = cellsOnEdge(1,iEdge)
                cell2 = cellsOnEdge(2,iEdge)
@@ -1793,11 +1811,43 @@ contains
                cellWidth = 2.0_RKIND* &
                            sqrt((areaCell(cell1) + areaCell(cell2))/ &
                                 2.0_RKIND/pii)
-               meshScalingDel2(iEdge) =  cellWidth/ &
+               initScalingDel2(iEdge) =  cellWidth/ &
                                          config_hmix_ref_cell_width
-               meshScalingDel4(iEdge) = (cellWidth/ &
+               initScalingDel4(iEdge) = (cellWidth/ &
                                          config_hmix_ref_cell_width)**3
             end do
+
+            ! Smooth-out scaling over local halo
+            do iIter = 1, 4
+               do iEdge = 1, nEdgesAll
+                  meshScalingDel2(iEdge) = initScalingDel2(iEdge)
+                  meshScalingDel4(iEdge) = initScalingDel4(iEdge)
+                  nEdgeAvg = 1
+                  do i = 1, nEdgesOnEdge(iEdge)
+                     jEdge = edgesOnEdge(i,iEdge)
+                     ! skip if exterior edge
+                     if (cellsOnEdge(1,jEdge) < 1 .or. &
+                         cellsOnEdge(1,jEdge) > nCellsAll .or. &
+                         cellsOnEdge(2,jEdge) < 1 .or. &
+                         cellsOnEdge(2,jEdge) > nCellsAll) cycle
+                     ! take mean of interior
+                     meshScalingDel2(iEdge) = &
+                        meshScalingDel2(iEdge) + initScalingDel2(jEdge)
+                     meshScalingDel4(iEdge) = &
+                        meshScalingDel4(iEdge) + initScalingDel4(jEdge)
+                     nEdgeAvg = nEdgeAvg + 1
+                  end do
+                  meshScalingDel2(iEdge) = & 
+                     meshScalingDel2(iEdge) / nEdgeAvg
+                  meshScalingDel4(iEdge) = &
+                     meshScalingDel4(iEdge) / nEdgeAvg
+               end do
+               ! for the next smoothing pass
+               initScalingDel2(:) = meshScalingDel2(:)
+               initScalingDel4(:) = meshScalingDel4(:)
+            end do
+
+            deallocate(initScalingDel2, initScalingDel4)
 
          else ! not using ref cell width
             ! Mesh scaling is set by meshDensity. This is both confusing
@@ -1830,6 +1880,222 @@ contains
    !--------------------------------------------------------------------
 
    end subroutine ocn_meshScaling !}}}
+   
+!***********************************************************************
+!
+!  routine ocn_weightsOnEdgeLsqr
+!
+!> \brief  Computes least-squares weights for u^perp reconstruction
+!> \author Darren Engwirda, Sara Calandrini
+!> \date   Jan. 2022
+!> \details
+!>  This routine initializes weightsOnEdgeLsqr which can be used in 
+!>  place of weightsOnEdge to compute u^perp with increased accuracy
+!
+!-----------------------------------------------------------------------
+
+   subroutine inv_3x3(amat,adim,ainv,vdim,adet)
+
+   ! an explicit 3x3 matrix inverse
+
+       implicit none
+
+   !------------------------------------------- arguments !
+       integer, intent( in) :: adim
+       real (kind=RKIND), intent( in) :: amat(adim,*)
+       integer, intent( in) :: vdim
+       real (kind=RKIND), intent(out) :: ainv(vdim,*)
+       real (kind=RKIND), intent(out) :: adet
+
+   !------------------------------------------- variables !
+       real (kind=RKIND) :: &
+       aa2233,aa2332,aa2133,aa2331,aa2132, &
+       aa2231,aa1233,aa1332,aa1223,aa1322, &
+       aa1133,aa1331,aa1123,aa1321,aa1132, &
+       aa1231,aa1122,aa1221
+
+   !------------------------------------------- form A^-1 !
+       aa2233 = amat(2,2) * amat(3,3)
+       aa2332 = amat(2,3) * amat(3,2)
+       aa2133 = amat(2,1) * amat(3,3)
+       aa2331 = amat(2,3) * amat(3,1)
+       aa2132 = amat(2,1) * amat(3,2)
+       aa2231 = amat(2,2) * amat(3,1)
+
+       adet =  &
+       amat(1,1) *  (aa2233 - aa2332) - &
+       amat(1,2) *  (aa2133 - aa2331) + &
+       amat(1,3) *  (aa2132 - aa2231)
+
+       aa1233 = amat(1,2) * amat(3,3)
+       aa1332 = amat(1,3) * amat(3,2)
+       aa1223 = amat(1,2) * amat(2,3)
+       aa1322 = amat(1,3) * amat(2,2)
+       aa1133 = amat(1,1) * amat(3,3)
+       aa1331 = amat(1,3) * amat(3,1)
+       aa1123 = amat(1,1) * amat(2,3)
+       aa1321 = amat(1,3) * amat(2,1)
+       aa1132 = amat(1,1) * amat(3,2)
+       aa1231 = amat(1,2) * amat(3,1)
+       aa1122 = amat(1,1) * amat(2,2)
+       aa1221 = amat(1,2) * amat(2,1)
+
+       ainv(1,1) =  (aa2233 - aa2332)
+       ainv(1,2) = -(aa1233 - aa1332)
+       ainv(1,3) =  (aa1223 - aa1322)
+
+       ainv(2,1) = -(aa2133 - aa2331)
+       ainv(2,2) =  (aa1133 - aa1331)
+       ainv(2,3) = -(aa1123 - aa1321)
+
+       ainv(3,1) =  (aa2132 - aa2231)
+       ainv(3,2) = -(aa1132 - aa1231)
+       ainv(3,3) =  (aa1122 - aa1221)
+
+   end subroutine inv_3x3
+
+   subroutine ocn_weightsOnEdgeLsqr() !{{{
+
+      !-----------------------------------------------------------------
+      ! local variables
+      !-----------------------------------------------------------------
+
+      integer :: iEdge, jEdge, i
+
+      real (kind=RKIND) :: tmat(maxEdges2,3), &
+                           matt(3,maxEdges2), &
+                           rmat(3,3), rinv(3,3), &
+                           rdet, xmul, ymul, zmul, norm
+      
+      real (kind=RKIND), dimension(:,:), allocatable :: &
+                           enrm, edir, eprp
+
+      ! End preamble
+      !-------------
+      ! Begin code
+
+      allocate(enrm(nEdgesAll,3))
+      allocate(edir(nEdgesAll,3))
+      allocate(eprp(nEdgesAll,3))
+
+      do iEdge = 1, nEdgesHalo(3)
+      !- unit tangent (on spherical surface) at edge
+         eprp(iEdge,1) = xVertex(verticesOnEdge(2,iEdge)) &
+                       - xVertex(verticesOnEdge(1,iEdge))
+         eprp(iEdge,2) = yVertex(verticesOnEdge(2,iEdge)) &
+                       - yVertex(verticesOnEdge(1,iEdge))
+         eprp(iEdge,3) = zVertex(verticesOnEdge(2,iEdge)) &
+                       - zVertex(verticesOnEdge(1,iEdge))
+
+         norm = sqrt(eprp(iEdge,1) ** 2 + &
+                     eprp(iEdge,2) ** 2 + &
+                     eprp(iEdge,3) ** 2 )
+
+         eprp(iEdge,1) = eprp(iEdge,1) / norm
+         eprp(iEdge,2) = eprp(iEdge,2) / norm
+         eprp(iEdge,3) = eprp(iEdge,3) / norm
+
+      !- unit normal (to spherical surface) at edge
+         if (onSphere) then
+            enrm(iEdge,1) = xEdge(iEdge) / sphereRadius
+            enrm(iEdge,2) = yEdge(iEdge) / sphereRadius
+            enrm(iEdge,3) = zEdge(iEdge) / sphereRadius
+         else
+            enrm(iEdge,1) = 0.0_RKIND
+            enrm(iEdge,2) = 0.0_RKIND
+            enrm(iEdge,3) = 1.0_RKIND
+         end if
+
+      !- unit normal (on spherical surface) at edge
+         if (cellsOnEdge(1,iEdge) > nCellsAll) then
+            edir(iEdge,1) = &
+               xCell(cellsOnEdge(2,iEdge)) - xEdge(iEdge)
+            edir(iEdge,2) = &
+               yCell(cellsOnEdge(2,iEdge)) - yEdge(iEdge)
+            edir(iEdge,3) = &
+               zCell(cellsOnEdge(2,iEdge)) - zEdge(iEdge)
+         else &
+         if (cellsOnEdge(2,iEdge) > nCellsAll) then
+            edir(iEdge,1) = &
+               xEdge(iEdge) - xCell(cellsOnEdge(1,iEdge))
+            edir(iEdge,2) = &
+               yEdge(iEdge) - yCell(cellsOnEdge(1,iEdge))
+            edir(iEdge,3) = &
+               zEdge(iEdge) - zCell(cellsOnEdge(1,iEdge))
+         else
+            edir(iEdge,1) = xCell(cellsOnEdge(2,iEdge)) &
+                          - xCell(cellsOnEdge(1,iEdge))
+            edir(iEdge,2) = yCell(cellsOnEdge(2,iEdge)) &
+                          - yCell(cellsOnEdge(1,iEdge))
+            edir(iEdge,3) = zCell(cellsOnEdge(2,iEdge)) &
+                          - zCell(cellsOnEdge(1,iEdge))
+         end if
+
+         norm = sqrt(edir(iEdge,1) ** 2 + &
+                     edir(iEdge,2) ** 2 + &
+                     edir(iEdge,3) ** 2 )
+
+         edir(iEdge,1) = edir(iEdge,1) / norm
+         edir(iEdge,2) = edir(iEdge,2) / norm
+         edir(iEdge,3) = edir(iEdge,3) / norm
+      end do
+
+      !- set lsqr weights for each edge in the mesh
+      do iEdge = 1, nEdgesHalo(3)
+         weightsOnEdgeLsqr(:,iEdge) = 0.0_RKIND
+         tmat(:,:) = 0.0_RKIND
+         matt(:,:) = 0.0_RKIND
+         rmat(:,:) = 0.0_RKIND
+         rinv(:,:) = 0.0_RKIND
+
+      !- assemble lsqr matrix T: n_hat dot u = u_ee
+         tmat(1,1) = enrm(iEdge,1)
+         tmat(1,2) = enrm(iEdge,2)
+         tmat(1,3) = enrm(iEdge,3)
+
+         do i = 1, nEdgesOnEdge(iEdge)
+            jEdge = edgesOnEdge(i,iEdge)
+            if(jEdge > nEdgesAll) cycle
+
+            tmat( i+1,1) = edir(jEdge,1)
+            tmat( i+1,2) = edir(jEdge,2)
+            tmat( i+1,3) = edir(jEdge,3)
+         end do
+
+      !- form lsqr matrices: (T'*T) * u = T' * u_ee
+         matt = transpose(tmat)
+         rmat = matmul(matt, tmat)
+
+      !- factorise matrices: r_inv = (T'*T) ^ -1
+         call inv_3x3(rmat, 3, rinv, 3, rdet)
+
+      !- assemble lsqr weight: t_hat dot r_inv * T'
+         do i = 1, nEdgesOnEdge(iEdge)
+            xmul = ( &
+               rinv(1,1) * matt(1,i+1) + &
+               rinv(1,2) * matt(2,i+1) + &
+               rinv(1,3) * matt(3,i+1)) / rdet
+
+            ymul = ( &
+               rinv(2,1) * matt(1,i+1) + &
+               rinv(2,2) * matt(2,i+1) + &
+               rinv(2,3) * matt(3,i+1)) / rdet
+
+            zmul = ( &
+               rinv(3,1) * matt(1,i+1) + &
+               rinv(3,2) * matt(2,i+1) + &
+               rinv(3,3) * matt(3,i+1)) / rdet
+
+            weightsOnEdgeLsqr(i,iEdge) = &
+               eprp(iEdge,1) * xmul + &
+               eprp(iEdge,2) * ymul + &
+               eprp(iEdge,3) * zmul
+         end do
+      end do
+
+      deallocate(enrm, edir, eprp)
+
+   end subroutine ocn_weightsOnEdgeLsqr !}}}
 
 !***********************************************************************
 
