@@ -191,6 +191,7 @@ contains
       end do
 #ifndef MPAS_OPENACC
       !$omp end do
+      !$omp end parallel
 #endif
 
       !$acc exit data delete(dudzTop, wAvgTop)
