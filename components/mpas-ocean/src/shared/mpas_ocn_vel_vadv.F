@@ -105,7 +105,7 @@ contains
          iEdge, k,     &! loop indices for edge, vertical loops
          iCell, i,     &! loop indices for dual cells
          kmin, kmax,   &! shallowest and deepest active layers
-         vert1, vert2  &! neighbor vertex indices on edge
+         vert1, vert2   ! neighbor vertex indices on edge
 
       real (kind=RKIND) :: &
          r_tmp
