@@ -2110,7 +2110,7 @@ contains
             weightsOnEdge_temp = weightsOnEdgeLsqr(i, iEdge)
             do k = kmin,kmax
                tangentialVelocity(k,iEdge) = &
-               tangentialVelocity(k,iEdge) + 
+               tangentialVelocity(k,iEdge) + &
                    edgeMask(k, iEdge)*weightsOnEdge_temp* &
                                       normalVelocity(k, eoe)
             end do
