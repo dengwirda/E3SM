@@ -62,6 +62,22 @@ module ocn_gm
 
 contains
 
+   function safe_slope(num, den) result(slope)
+
+      real(kind=RKIND), intent(in) :: num, den
+      real(kind=RKIND) :: slope
+
+      ! compute isopycnal slopes safely wrt. finite precision
+      ! small slope assumption, so don't want |s| > 1
+
+      if (abs(den) < abs(num)) then
+         slope = 1.0_RKIND
+      else
+         slope = num / den
+      end if
+
+   end function
+
 !***********************************************************************
 !
 !  routine ocn_GM_compute_Bolus_velocity
@@ -130,16 +146,18 @@ contains
       real(kind=RKIND), dimension(:), pointer   :: areaCell, dcEdge, dvEdge, tridiagA, tridiagB, tridiagC, rightHandSide
       integer, dimension(:), pointer   :: minLevelEdgeBot, maxLevelEdgeTop, minLevelCell, maxLevelCell, nEdgesOnCell
       integer, dimension(:, :), pointer :: cellsOnEdge, edgesOnCell
-      integer                          :: i, k, iEdge, cell1, cell2, iCell, N, iCellSelf, maxLocation
-      real(kind=RKIND)                 :: h1, h2, areaEdge, BruntVaisalaFreqTopEdge, rtmp
+      integer                          :: i, k, km1, kp1, iEdge, cell1, cell2, iCell, & 
+                                          N, iCellSelf, maxLocation
+      real(kind=RKIND)                 :: h1, h2, BruntVaisalaFreqTopEdge, rtmp
       real(kind=RKIND)                 :: sum_hN, countN2, maxN, ltSum
       real(kind=RKIND)                 :: sumRi, RiTopOfEdge, zEdge, zMLD, sfcTaper
-      real(kind=RKIND) :: dcEdgeInv, drhoDx, drhoDT, drhoDS, dTdx, dSdx
+      real(kind=RKIND) :: dcEdgeInv, drhoDxTop, drhoDxBot, drhoDTTop, drhoDTBot, & 
+                          drhoDSTop, drhoDSBot, dTdxTop, dTdxBot, dSdxTop, dSdxBot
       real(kind=RKIND) :: slopeTaperUp, slopeTaperDown, sfcTaperUp, sfcTaperDown, invAreaCell
       real(kind=RKIND) :: lt1, lt2, c_min
       real(kind=RKIND) :: sigma, Lr, Length, L_rhines, shearEdgeInv
       real (kind=RKIND) :: eddyLength, eddyTime
-      real(kind=RKIND), dimension(:), allocatable :: dzTop, dTdzTop, dSdzTop, k33Norm
+      real(kind=RKIND), dimension(:), allocatable :: dzTop, dTdzTop, dSdzTop
       real(kind=RKIND), dimension(:), allocatable :: RossbyRadiusTaper
       real(kind=RKIND) :: c_Visbeck   ! baroclinic wave speed from Visbeck parameterization
       real(kind=RKIND) :: c_mode1, resolution, dc_Lr
@@ -227,7 +245,6 @@ contains
          allocate(dzTop(nVertLevels + 1))
          allocate(dTdzTop(nVertLevels + 1))
          allocate(dSdzTop(nVertLevels + 1))
-         allocate(k33Norm(nVertLevels + 1))
 
          if ( config_Redi_N2_based_taper_enable ) then
 
@@ -271,13 +288,14 @@ contains
          nCells = nCellsArray(3)
          !$omp parallel
          !$omp do schedule(runtime)  &
-         !$omp private(invAreaCell, k33Norm, k, dzTop, dTdzTop, dSdzTop, i, iEdge, cell1, cell2, &
-         !$omp         iCellSelf, dcEdgeInv, areaEdge, drhoDT, drhoDS, dTdx, dSdx, drhoDx, &
+         !$omp private(invAreaCell, dzTop, dTdzTop, dSdzTop, &
+         !$omp         k, km1, kp1, i, iEdge, cell1, cell2, &
+         !$omp         iCellSelf, dcEdgeInv, drhoDTTop, drhoDTBot, &
+         !$omp         drhoDSTop, drhoDSBot, dTdxTop, dTdxBot, dSdxTop, dSdxBot, &
+         !$omp         drhoDxTop, drhoDxBot, &
          !$omp         slopeTaperUp, slopeTaperDown, sfcTaperUp, sfcTaperDown, sfcTaper)
          do iCell = 1, nCells
             invAreaCell = 1.0_RKIND/areaCell(iCell)
-            k33(1:maxLevelCell(iCell) + 1, iCell) = 0.0_RKIND
-            k33Norm(1:maxLevelCell(iCell) + 1) = epsGM
             ! prep dz, dTdz and dSdz for this column
             do k = minLevelCell(iCell)+1, maxLevelCell(iCell)
                dzTop(k) = 0.5_RKIND*(layerThickness(k - 1, iCell) + layerThickness(k, iCell))
@@ -305,30 +323,63 @@ contains
                   iCellSelf = 2
                end if
                dcEdgeInv = 1.0_RKIND/dcEdge(iEdge)
-               areaEdge = dcEdge(iEdge)*dvEdge(iEdge)
 
                do k = minLevelEdgeBot(iEdge), maxLevelEdgeTop(iEdge)
-                  drhoDT = -thermExpCoeff(k, iCell)
-                  drhoDS = salineContractCoeff(k, iCell)
-                  dTdx = (activeTracers(indexTemperature, k, cell2) &
-                          - activeTracers(indexTemperature, k, cell1)) &
-                         *dcEdgeInv
-                  dSdx = (activeTracers(indexSalinity, k, cell2) &
-                          - activeTracers(indexSalinity, k, cell1)) &
-                         *dcEdgeInv
-                  drhoDx = drhoDT*dTdx + drhoDS*dSdx
+                  ! evaluate isopycnal slopes at top/bot of edge
+                  km1 = max(k - 1, minLevelEdgeBot(iEdge))
+                  kp1 = min(k + 1, maxLevelEdgeTop(iEdge))
 
-                  ! Always compute *Up on the top cell and *Down on the bottom
-                  ! cell, even though they are never used. This avoids an if
-                  ! statement or separate computation for top and bottom.
+                  drhoDTTop = -0.5_RKIND * ( & 
+                     thermExpCoeff(k, iCell) + &
+                     thermExpCoeff(km1, iCell) )
+                  drhoDSTop = +0.5_RKIND * ( &
+                     salineContractCoeff(k, iCell) + &
+                     salineContractCoeff(km1, iCell) )
+
+                  drhoDTBot = -0.5_RKIND * ( & 
+                     thermExpCoeff(k, iCell) + &
+                     thermExpCoeff(kp1, iCell) )
+                  drhoDSBot = +0.5_RKIND * ( &
+                     salineContractCoeff(k, iCell) + &
+                     salineContractCoeff(kp1, iCell) )
+
+                  dTdxTop = 0.5_RKIND * ( &
+                     activeTracers(indexTemperature, k, cell2) &
+                   + activeTracers(indexTemperature, km1, cell2) &
+                   - activeTracers(indexTemperature, k, cell1) &
+                   - activeTracers(indexTemperature, km1, cell1) &
+                          ) * dcEdgeInv
+                  dSdxTop = 0.5_RKIND * ( &
+                     activeTracers(indexSalinity, k, cell2) &
+                   + activeTracers(indexSalinity, km1, cell2) &
+                   - activeTracers(indexSalinity, k, cell1) &
+                   - activeTracers(indexSalinity, km1, cell1) &
+                          ) * dcEdgeInv
+
+                  drhoDxTop = drhoDTTop*dTdxTop + drhoDSTop*dSdxTop
+
+                  dTdxBot = 0.5_RKIND * ( &
+                     activeTracers(indexTemperature, k, cell2) &
+                   + activeTracers(indexTemperature, kp1, cell2) &
+                   - activeTracers(indexTemperature, k, cell1) &
+                   - activeTracers(indexTemperature, kp1, cell1) &
+                          ) * dcEdgeInv
+                  dSdxBot = 0.5_RKIND * ( &
+                     activeTracers(indexSalinity, k, cell2) &
+                   + activeTracers(indexSalinity, kp1, cell2) &
+                   - activeTracers(indexSalinity, k, cell1) &
+                   - activeTracers(indexSalinity, kp1, cell1) &
+                          ) * dcEdgeInv
+
+                  drhoDxBot = drhoDTBot*dTdxBot + drhoDSBot*dSdxBot
+
                   slopeTriadUp(k, iCellSelf, iEdge) = &
-                     -drhoDx/ &
-                     (drhoDT*dTdzTop(k) &
-                      + drhoDS*dSdzTop(k) + 1E-15_RKIND)
+                     safe_slope( -drhoDxTop, &
+                     drhoDTTop*dTdzTop(k + 0) + drhoDSTop*dSdzTop(k + 0))
+
                   slopeTriadDown(k, iCellSelf, iEdge) = &
-                     -drhoDx/ &
-                     (drhoDT*dTdzTop(k + 1) &
-                      + drhoDS*dSdzTop(k + 1) + 1E-15_RKIND)
+                     safe_slope( -drhoDxBot, &
+                     drhoDTBot*dTdzTop(k + 1) + drhoDSBot*dSdzTop(k + 1))
 
                   ! set taper of slope ('F' function from Danabasoglu and McWilliams 95)
                   if (abs(slopeTriadDown(k, iCellSelf, iEdge)) > 0.6_RKIND*config_redi_maximum_slope) then
@@ -368,26 +419,18 @@ contains
                   slopeTriadDown(k, iCellSelf, iEdge) = &
                      slopeTaperDown*sfcTaperDown*slopeTriadDown(k, iCellSelf, iEdge)
 
-                  ! Griffies 1998 eqn 34
-                  if (k > minLevelCell(iCell)) then
-                     k33(k, iCell) = k33(k, iCell) +  &
-                                     areaEdge*dzTop(k)*slopeTriadUp(k, iCellSelf, iEdge)**2
-                     k33Norm(k) = k33Norm(k) + areaEdge*dzTop(k)
+                  ! remap |S|**2 from edges at top of cell  
+                  if (k - 1 >= minLevelCell(iCell)) then
+                     k33(k, iCell) = k33(k, iCell) + &
+                        0.50_RKIND * (rediKappaScaling(k, iCell) + &
+                                      rediKappaScaling(k - 1, iCell)) * &
+                        0.25_RKIND * dcEdge(iEdge) * dvEdge(iEdge) * invAreaCell * &
+                        (0.5_RKIND * (slopeTriadUp(k, iCellSelf, iEdge) + &
+                                      slopeTriadDown(k - 1, iCellSelf, iEdge))) ** 2
                   end if
-
-                  !Taper Redi by tapering the slopes
-                  k33(k + 1, iCell) = k33(k + 1, iCell) +  &
-                                      areaEdge*dzTop(k + 1)*slopeTriadDown(k, iCellSelf, iEdge)**2
-                  k33Norm(k + 1) = k33Norm(k + 1) + areaEdge*dzTop(k + 1)
-
 
                end do ! maxLevelEdgeTop(iEdge)
             end do ! nEdgesOnCell(iCell)
-
-            ! Normalize k33
-            do k = minLevelCell(iCell)+1, maxLevelCell(iCell)
-               k33(k, iCell) = k33(k, iCell)/k33Norm(k)*RediKappaScaling(k, iCell)
-            end do
             k33(1:minLevelCell(iCell), iCell) = 0.0_RKIND
             k33(maxLevelCell(iCell) + 1, iCell) = 0.0_RKIND
          end do ! iCell
@@ -397,7 +440,6 @@ contains
          deallocate (dzTop)
          deallocate (dTdzTop)
          deallocate (dSdzTop)
-         deallocate (k33Norm)
 
       endif  !config_use_Redi
 
