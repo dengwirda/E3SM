@@ -70,10 +70,10 @@ contains
       ! compute isopycnal slopes safely wrt. finite precision
       ! small slope assumption, so don't want |s| > 1
 
-      if (abs(den) < abs(num)) then
-         slope = 1.0_RKIND
-      else
+      if (abs(den) > abs(num)) then
          slope = num / den
+      else
+         slope = sign(1.0_RKIND, den * num)
       end if
 
    end function
