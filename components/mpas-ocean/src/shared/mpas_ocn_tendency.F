@@ -1135,7 +1135,7 @@ contains
                                    layerThickness, zMid, tracerGroup, &
                                    RediKappa, slopeTriadUp, &
                                    slopeTriadDown, dt, isActiveTracer, &
-                                   RediKappaScaling, rediLimiterCount, &
+                                   k33, RediKappaScaling, rediLimiterCount, &
                                    tracerGroupTend, err)
 
          if (computeBudgets) then
