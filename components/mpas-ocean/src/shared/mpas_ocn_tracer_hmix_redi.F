@@ -55,7 +55,7 @@ module ocn_tracer_hmix_Redi
 
    real(kind=RKIND) :: term1TaperFactor
    real(kind=RKIND) :: limiter_safety_factor
-   logical :: use_quasi_monotone
+   logical :: use_quasi_monotone, use_quasi_monotone_k33
    real(kind=RKIND), dimension(:), allocatable :: rediKappaCell
    real(kind=RKIND), dimension(:, :, :), allocatable :: redi_term2_edge, redi_term3_topOfCell
    real(kind=RKIND), dimension(:, :, :), allocatable :: redi_term1, redi_term2, redi_term3
@@ -79,7 +79,7 @@ contains
 
    subroutine ocn_tracer_hmix_Redi_tend(meshPool, layerThickness, layerThickEdgeMean, zMid, tracers, &
                                         RediKappa, dt, isActiveTracer, slopeTriadUp, slopeTriadDown, &
-                                        RediKappaScaling, rediLimiterCount, tend, err)!{{{
+                                        k33, RediKappaScaling, rediLimiterCount, tend, err)!{{{
 
       !-----------------------------------------------------------------
       !
@@ -101,6 +101,9 @@ contains
       real(kind=RKIND), dimension(:, :, :), intent(in) :: &
          slopeTriadUp, slopeTriadDown, &
          tracers !< Input: tracer quantities
+
+      real(kind=RKIND), dimension(:, :), intent(inout) :: &
+         k33     !< InOut: vertical diffusivity
 
       real(kind=RKIND), intent(in) :: dt
 
@@ -144,7 +147,7 @@ contains
       real(kind=RKIND) :: tempTracer, invAreaCell
       real(kind=RKIND) :: flux, flux_term2, flux_term3, dTracerDx, coef
       real(kind=RKIND) :: r_tmp, tracer_turb_flux, kappaRediEdgeVal
-      real(kind=RKIND) :: over, diff, scal, scalUp, scalDn
+      real(kind=RKIND) :: over, diff, scal, scalUp, scalDn, scalK33
       real(kind=RKIND), dimension(:), pointer :: areaCell, dvEdge, dcEdge
       real(kind=RKIND), dimension(:), allocatable :: minimumVal
       real(kind=RKIND), dimension(:, :), allocatable :: fluxRediZTop
@@ -489,7 +492,8 @@ contains
       !now go back and reapply all tendencies
       !$omp parallel
       !$omp do schedule(runtime) &
-      !$omp private(invAreaCell, k, kUp, kDn, iTr, i, iEdge, jCell, scal, scalUp, scalDn)
+      !$omp private(invAreaCell, k, kUp, kDn, iTr, i, iEdge, jCell, scal, &
+      !$omp         scalUp, scalDn, scalK33)
       do iCell = 1, nCells
          invAreaCell = 1.0_RKIND/areaCell(iCell)
          do k = minLevelCell(iCell), maxLevelCell(iCell)
@@ -503,6 +507,7 @@ contains
             do k = minLevelCell(iCell), maxLevelCell(iCell)
                kUp = max(minLevelCell(iCell), k - 1)
                kDn = min(maxLevelCell(iCell), k + 1)
+               scalK33 = 1.0_RKIND
                do iTr = 1, ntracers
                   ! harmonic-mean; not strictly monotone, but smooth
                   scalUp = 2.0_RKIND * &
@@ -517,6 +522,9 @@ contains
                      redi_flux_scale(iTr, kDn, iCell) + &
                      redi_flux_scale(iTr, k, iCell) + 1.0E-16_RKIND)
 
+                  !! a quick hack to scale K33 in a worst-case fashion
+                  scalK33 = min(scalK33, scalUp)
+
                   tend(iTr, k, iCell) = tend(iTr, k, iCell) + &
                      rediKappaCell(iCell) * ( &
                         RediKappaScaling(k, iCell)* &
@@ -524,6 +532,11 @@ contains
                         RediKappaScaling(k + 1, iCell)* &
                         scalDn*redi_term3_topOfCell(iTr, k + 1, iCell))
                end do
+               if (use_quasi_monotone_k33) then
+                  !! this really needs to be done on a per tracer basis,
+                  !! but various things are not really setup for this...
+                  k33(k, iCell) = scalK33 * k33(k, iCell)
+               end if
             end do
 
             ! term 2: div( h S d/dz psi )
@@ -644,6 +657,7 @@ contains
 
          ! quasi bounds-preserving limiter
          use_quasi_monotone = config_Redi_use_quasi_monotone_limiter
+         use_quasi_monotone_k33 = config_Redi_use_quasi_monotone_limiter_k33
       
          ! safety factor for limiter: 0 <= fac <= 1
          limiter_safety_factor = config_Redi_quasi_monotone_safety_factor
